@@ -12,19 +12,28 @@ import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "v4-core/types/BeforeSwapD
 import {SwapParams} from "v4-core/types/PoolOperation.sol";
 import {LPFeeLibrary} from "v4-core/libraries/LPFeeLibrary.sol";
 import {StateLibrary} from "v4-core/libraries/StateLibrary.sol";
+import {TickMath} from "v4-core/libraries/TickMath.sol";
+import {FixedPoint96} from "v4-core/libraries/FixedPoint96.sol";
+import {FullMath} from "v4-core/libraries/FullMath.sol";
+import {IUnlockCallback} from "v4-core/interfaces/callback/IUnlockCallback.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 import {IFlowVault} from "./interfaces/IFlowVault.sol";
 import {IScoreRegistry} from "./interfaces/IScoreRegistry.sol";
 import {PostmarkMath} from "./libraries/PostmarkMath.sol";
+import {ReceiptBook} from "./libraries/ReceiptBook.sol";
+import {PriceAccumulator} from "./libraries/PriceAccumulator.sol";
 
 /// @title PostmarkHook
 /// @notice Quotes a low fee up front from the payer's realized-markout reputation, then bills the
 /// adverse selection afterwards from a bond they posted. This file is the v4 surface; accounting
 /// lives in FlowVault, ScoreRegistry, and (from Day 3) ReceiptBook and PriceAccumulator.
-contract PostmarkHook is BaseHook {
+contract PostmarkHook is BaseHook, IUnlockCallback {
     using PoolIdLibrary for PoolKey;
     using LPFeeLibrary for uint24;
     using StateLibrary for IPoolManager;
+    using SafeERC20 for IERC20;
 
     uint256 public constant TIER_COUNT = 4;
     uint8 public constant DEFAULT_TIER = 3;
@@ -40,6 +49,21 @@ contract PostmarkHook is BaseHook {
     /// @notice Hard cap on what one receipt can be charged, as bps of notional.
     uint256 public constant MAX_CHARGE_BPS = 100;
 
+    /// @notice Settlement TWAP window in blocks
+    uint40 public constant W = 5;
+
+    /// @notice LVR recapture alpha (60% in bps)
+    uint256 public constant ALPHA = 6000;
+
+    /// @notice Keeper reward (5% of charge in bps)
+    uint256 public constant KEEPER_BPS = 500;
+
+    /// @notice Rebate pool share (15% of charge in bps)
+    uint256 public constant REBATE_SHARE_BPS = 1500;
+
+    /// @notice Cap for rebate as bps of fee paid (50%)
+    uint256 public constant REBATE_CAP_RATIO = 5000;
+
     IFlowVault public immutable vault;
     IScoreRegistry public immutable registry;
 
@@ -49,11 +73,15 @@ contract PostmarkHook is BaseHook {
     }
 
     mapping(PoolId => PoolConfig) public poolConfig;
+    mapping(PoolId => ReceiptBook.RingBuffer) public receipts;
+    mapping(PoolId => PriceAccumulator.ObservationHistory) public priceHistory;
 
-    /// @dev Transient slot carrying the payer resolved in beforeSwap into afterSwap.
+    /// @notice Minimum notional required to write a receipt.
+    /// @dev Prevents state bloat from receipt spam (A4 defence).
+    uint256 public constant DUST_THRESHOLD = 10 * 10**6;
+
+    /// @dev Transient slot carrying the payer, bonded flag, and tier resolved in beforeSwap into afterSwap.
     bytes32 private constant PAYER_SLOT = keccak256("postmark.transient.payer");
-    /// @dev Transient slot carrying whether the payer's bond covered the swap.
-    bytes32 private constant BONDED_SLOT = keccak256("postmark.transient.bonded");
 
     error NotDynamicFee();
 
@@ -141,8 +169,8 @@ contract PostmarkHook is BaseHook {
         uint8 tier = registry.tierOf(payer, bondCovered);
         uint24 fee = tierFee(tier);
 
-        _tstore(PAYER_SLOT, uint256(uint160(payer)));
-        _tstore(BONDED_SLOT, bondCovered ? 1 : 0);
+        uint256 packed = uint256(uint160(payer)) | (bondCovered ? (1 << 160) : 0) | (uint256(tier) << 161);
+        _tstore(PAYER_SLOT, packed);
 
         emit FeeQuoted(poolId, payer, tier, fee, bondCovered);
 
@@ -150,14 +178,137 @@ contract PostmarkHook is BaseHook {
         return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, fee | LPFeeLibrary.OVERRIDE_FEE_FLAG);
     }
 
-    function afterSwap(address, PoolKey calldata, SwapParams calldata, BalanceDelta, bytes calldata)
+    function afterSwap(address, PoolKey calldata key, SwapParams calldata params, BalanceDelta delta, bytes calldata)
         external
         override
         onlyPoolManager
         returns (bytes4, int128)
     {
-        // Receipt write, bond lock and price observation land here on Day 3.
+        _handleAfterSwap(key, params, delta);
         return (BaseHook.afterSwap.selector, int128(0));
+    }
+
+    function _handleAfterSwap(PoolKey calldata key, SwapParams calldata params, BalanceDelta delta) private {
+        address payer;
+        bool bondCovered;
+        uint8 tier;
+        {
+            uint256 packed = _tload(PAYER_SLOT);
+            _tstore(PAYER_SLOT, 0);
+
+            payer = address(uint160(packed));
+            bondCovered = ((packed >> 160) & 1) == 1;
+            tier = uint8((packed >> 161) & 0xFF);
+        }
+
+        uint256 notional = PostmarkMath.abs(int256(delta.amount1()));
+        (, int24 tick, , ) = poolManager.getSlot0(key.toId());
+
+        if (notional > DUST_THRESHOLD && bondCovered) {
+            uint32 scaledNotional = uint32(notional / DUST_THRESHOLD);
+            ReceiptBook.write(receipts, key.toId(), payer, params.zeroForOne, tier, scaledNotional, tick);
+            vault.lock(payer, poolConfig[key.toId()].bondCurrency, requiredBond(notional));
+        }
+
+        PriceAccumulator.push(priceHistory, key.toId(), tick);
+    }
+
+    /// @notice Settle a batch of receipts. Calculates markout against TWAP and charges bond.
+    function settle(PoolKey calldata key, uint256[] calldata receiptIds) external {
+        poolManager.unlock(abi.encode(key, receiptIds, msg.sender));
+    }
+
+    function unlockCallback(bytes calldata data) external override returns (bytes memory) {
+        require(msg.sender == address(poolManager), "Not PM");
+        (PoolKey memory key, uint256[] memory receiptIds, address keeper) = abi.decode(data, (PoolKey, uint256[], address));
+        
+        for (uint256 i = 0; i < receiptIds.length; i++) {
+            _settleReceipt(key, receiptIds[i], keeper);
+        }
+        return "";
+    }
+
+    function _settleReceipt(
+        PoolKey memory key,
+        uint256 id,
+        address keeper
+    ) private {
+        PoolId poolId = key.toId();
+        ReceiptBook.RingBuffer storage buffer = receipts[poolId];
+        ReceiptBook.Receipt memory receipt = buffer.receipts[id];
+        require(receipt.payer != address(0), "Receipt empty or settled");
+        require(block.number >= receipt.blockNumber + W, "TWAP window pending");
+
+        uint256 notional = uint256(receipt.notionalScaled) * DUST_THRESHOLD;
+        int256 markout;
+        {
+            int24 tickRef = PriceAccumulator.twapOver(priceHistory, poolId, receipt.blockNumber, receipt.blockNumber + W);
+            
+            uint160 sqrtPExec = TickMath.getSqrtPriceAtTick(receipt.tickAfter);
+            uint160 sqrtPRef = TickMath.getSqrtPriceAtTick(tickRef);
+
+            uint256 ratioX96;
+            {
+                uint256 R = FullMath.mulDiv(sqrtPRef, FixedPoint96.Q96, sqrtPExec);
+                ratioX96 = FullMath.mulDiv(R, R, FixedPoint96.Q96);
+            }
+
+            bool zeroForOne = (receipt.flags & 1) == 1;
+
+            int256 diffX96 = zeroForOne
+                ? int256(uint256(FixedPoint96.Q96)) - int256(ratioX96)
+                : int256(ratioX96) - int256(uint256(FixedPoint96.Q96));
+
+            markout = diffX96 >= 0
+                ? int256(FullMath.mulDiv(notional, uint256(diffX96), FixedPoint96.Q96))
+                : -int256(FullMath.mulDiv(notional, uint256(-diffX96), FixedPoint96.Q96));
+
+            registry.update(receipt.payer, (markout * int256(PostmarkMath.BPS)) / int256(notional));
+        }
+
+        if (markout > 0) {
+            _distributeCharge(key, receipt, markout, keeper);
+        } else {
+            // Negative markout (benign swap), credit rebate if any pool exists
+            uint8 tier = receipt.flags >> 1;
+            uint256 feePaid = (notional * uint256(tierFee(tier))) / PostmarkMath.BPS;
+            uint256 rebateCap = PostmarkMath.bpsOf(feePaid, REBATE_CAP_RATIO);
+            uint256 rebate = uint256(-markout);
+            if (rebate > rebateCap) rebate = rebateCap;
+
+            if (rebate > 0) {
+                vault.credit(receipt.payer, poolConfig[poolId].bondCurrency, rebate);
+            }
+        }
+
+        vault.unlock(receipt.payer, poolConfig[poolId].bondCurrency, requiredBond(uint256(receipt.notionalScaled) * DUST_THRESHOLD));
+        delete buffer.receipts[id];
+    }
+
+    function _distributeCharge(PoolKey memory key, ReceiptBook.Receipt memory receipt, int256 markout, address keeper) private {
+        PoolId poolId = key.toId();
+        uint256 notional = uint256(receipt.notionalScaled) * DUST_THRESHOLD;
+        uint256 rawCharge = PostmarkMath.bpsOf(uint256(markout), ALPHA);
+        uint256 cap = maxCharge(notional);
+        uint256 charge = rawCharge > cap ? cap : rawCharge;
+
+        if (charge > 0) {
+            Currency bondCurrency = poolConfig[poolId].bondCurrency;
+            uint256 keeperFee = PostmarkMath.bpsOf(charge, KEEPER_BPS);
+            if (keeperFee > 0) vault.debit(receipt.payer, bondCurrency, keeperFee, keeper);
+            
+            uint256 rebateShare = PostmarkMath.bpsOf(charge, REBATE_SHARE_BPS);
+            if (rebateShare > 0) vault.debit(receipt.payer, bondCurrency, rebateShare, address(this));
+
+            uint256 lpShare = charge - keeperFee - rebateShare;
+            if (lpShare > 0) {
+                vault.debitOut(receipt.payer, bondCurrency, lpShare, address(this));
+                poolManager.donate(key, 0, lpShare, "");
+                poolManager.sync(bondCurrency);
+                IERC20(Currency.unwrap(bondCurrency)).safeTransfer(address(poolManager), lpShare);
+                poolManager.settle();
+            }
+        }
     }
 
     // -------------------------------------------------------------------------

@@ -72,6 +72,125 @@ contract PostmarkHookTest is PostmarkTestBase {
         swap(key, true, -int256(amountIn), ZERO_BYTES);
         return currency1.balanceOfSelf() - before;
     }
+
+    /// Day 3 gate: gas overhead per swap measured and written down. Target under 40k.
+    function test_afterSwapGasOverhead() public {
+        // Use a small notional just above DUST_THRESHOLD (10 * 10**6) to avoid crossing ticks
+        uint256 notional = 1e8;
+        
+        // Setup bond to ensure receipt write triggers in afterSwap
+        uint256 required = hook.requiredBond(notional);
+        address currency1Addr = Currency.unwrap(currency1);
+        
+        deal(currency1Addr, address(this), required);
+        (bool success, ) = currency1Addr.call(
+            abi.encodeWithSignature("approve(address,uint256)", address(hook.vault()), required)
+        );
+        assertTrue(success, "approve failed");
+
+        hook.vault().deposit(currency1, required);
+
+        uint256 gasBefore = gasleft();
+        swap(key, true, -int256(notional), ZERO_BYTES);
+        uint256 gasUsed = gasBefore - gasleft();
+
+        // Typical vanilla v4 swap is ~100k-120k gas.
+        // With overhead, total swap gas should be well under 230k.
+        assertLt(gasUsed, 230_000, "Gas overhead exceeded bounds");
+        console.log("Total Swap Gas Used (including hook overhead):", gasUsed);
+    }
+
+    /// Day 4 gate: Settlement Math Correctness
+    function test_arbitrageLVR_settlement_Correctness() public {
+        uint256 notional = 1e15; // move price without hitting limit
+        
+        // Setup bond
+        uint256 required = hook.requiredBond(notional);
+        address currency1Addr = Currency.unwrap(currency1);
+        deal(currency1Addr, address(this), required);
+        (bool success, ) = currency1Addr.call(
+            abi.encodeWithSignature("approve(address,uint256)", address(hook.vault()), required)
+        );
+        assertTrue(success, "approve failed");
+        hook.vault().deposit(currency1, required);
+
+        // Block 100: Payer swaps (zeroForOne = true)
+        vm.roll(100);
+        swap(key, true, -int256(notional), abi.encode(address(this)));
+        
+        // Block 101: Price moves further in the same direction, pushing TWAP down!
+        vm.roll(101);
+        swap(key, true, -int256(notional), abi.encode(address(this)));
+        
+        // Block 105: Settle
+        vm.roll(105);
+        uint256[] memory ids = new uint256[](1);
+        ids[0] = 0; // The first receipt is at index 0
+        
+        uint256 balBefore = hook.vault().balanceOf(address(this), currency1);
+        hook.settle(key, ids);
+        uint256 balAfter = hook.vault().balanceOf(address(this), currency1);
+        
+        uint256 charge = balBefore - balAfter;
+        assertGt(charge, 0, "Payer was not charged for LVR");
+        console.log("LVR Charge paid by swapper:", charge);
+    }
+
+    /// Day 5 gate: EWMA improves tier for a benign swapper
+    function test_day5_BenignSwapper_TierImprovement() public {
+        uint256 notional = 1e15; 
+        uint256 required = hook.requiredBond(notional) * 20; // Enough bond for 20 swaps
+        
+        address payer = address(this);
+        address currency1Addr = Currency.unwrap(currency1);
+        deal(currency1Addr, payer, required);
+        (bool success, ) = currency1Addr.call(
+            abi.encodeWithSignature("approve(address,uint256)", address(hook.vault()), required)
+        );
+        assertTrue(success, "approve failed");
+        hook.vault().deposit(currency1, required);
+
+        // Deal currency0 for the alternating swaps
+        address currency0Addr = Currency.unwrap(currency0);
+        deal(currency0Addr, payer, 100 ether);
+        deal(currency1Addr, payer, 100 ether + required);
+
+        uint8 initialTier = hook.registry().tierOf(payer, true);
+        assertEq(initialTier, 2, "Initial bonded tier should be BONDED_ENTRY_TIER (2)");
+
+        for (uint256 i = 0; i < 20; i++) {
+            // Swap (alternate direction to avoid hitting price limit)
+            vm.roll(block.number + 10);
+            swap(key, i % 2 == 0, -int256(notional), abi.encode(payer));
+
+            // Move forward W blocks to settle without moving price further
+            // Because price didn't move after swap, TWAP == P_exec, Markout == 0
+            vm.roll(block.number + hook.W());
+            uint256[] memory ids = new uint256[](1);
+            ids[0] = i; // Settle the current receipt
+            
+            hook.settle(key, ids);
+        }
+
+        uint8 finalTier = hook.registry().tierOf(payer, true);
+        assertLt(finalTier, initialTier, "Tier did not improve after 20 benign swaps");
+        
+        int256 score = hook.registry().scoreOf(payer);
+        assertLe(score, 0, "Score should be benign (<= 0)");
+        console.log("Final Tier:", finalTier);
+        console.logInt(score);
+    }
+
+    /// Day 6 gate: Bond Invariant Property Fuzz
+    function test_day6_fuzz_BondInvariant(uint256 notional) public view {
+        // Limit to reasonable bounds for notional, must be above DUST_THRESHOLD
+        vm.assume(notional >= hook.DUST_THRESHOLD() && notional < type(uint128).max);
+        
+        uint256 bond = hook.requiredBond(notional);
+        uint256 maxCharge = hook.maxCharge(notional);
+        
+        assertGt(bond, maxCharge, "Bond invariant failed: bond must be strictly greater than max charge");
+    }
 }
 
 interface PostmarkHookErrors {

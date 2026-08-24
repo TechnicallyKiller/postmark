@@ -27,6 +27,7 @@ interface IFlowVault {
     function unlock(address payer, Currency currency, uint256 amount) external;
     /// @dev Hook-only. Moves locked bond out to `to`. Returns the amount actually moved.
     function debit(address payer, Currency currency, uint256 amount, address to) external returns (uint256);
+    function debitOut(address payer, Currency currency, uint256 amount, address to) external returns (uint256);
     /// @dev Hook-only. Credits an already-held balance to a payer (rebates).
     function credit(address payer, Currency currency, uint256 amount) external;
 }

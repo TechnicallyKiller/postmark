@@ -9,6 +9,7 @@ import {StateLibrary} from "v4-core/libraries/StateLibrary.sol";
 import {LPFeeLibrary} from "v4-core/libraries/LPFeeLibrary.sol";
 import {Currency} from "v4-core/types/Currency.sol";
 import {PoolKey} from "v4-core/types/PoolKey.sol";
+import {PoolId} from "v4-core/types/PoolId.sol";
 import {IHooks} from "v4-core/interfaces/IHooks.sol";
 
 contract PostmarkHookTest is PostmarkTestBase {
@@ -20,7 +21,7 @@ contract PostmarkHookTest is PostmarkTestBase {
 
     /// Day 1 gate: a swap executes through the hook.
     function test_swapExecutesThroughHook() public {
-        assertTrue(hook.registered(poolId), "pool not registered by afterInitialize");
+        assertTrue(_registered(poolId), "pool not registered by afterInitialize");
 
         uint256 balBefore = currency1.balanceOfSelf();
         BalanceDelta delta = swap(key, true, -1e15, ZERO_BYTES);
@@ -60,6 +61,10 @@ contract PostmarkHookTest is PostmarkTestBase {
     function test_callbacksGatedToPoolManager() public {
         vm.expectRevert(PostmarkHookErrors.NotPoolManager.selector);
         hook.afterInitialize(address(this), key, SQRT_PRICE_1_1, 0);
+    }
+
+    function _registered(PoolId id) internal view returns (bool r) {
+        (r,) = hook.poolConfig(id);
     }
 
     function _swapAndMeasureOutput(uint256 amountIn) internal returns (uint256) {

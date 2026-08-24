@@ -132,6 +132,10 @@ Read these before the mechanism convinces you.
 
 **19 tests passing** across 3 suites — 10 vault, 5 hook, 4 fee-tier.
 
+## Working on this
+
+[HANDOFF.md](HANDOFF.md) is the project overview — what's done, what's left, decisions already made, and the gotchas worth knowing before you touch the code. [WORKLOG.md](WORKLOG.md) is the running session-by-session log, updated at the end of every working session.
+
 ## Getting started
 
 Requires [Foundry](https://book.getfoundry.sh/getting-started/installation).
@@ -168,6 +172,8 @@ test/
 docs/
   BUILD_PLAN.md           the full ten-day plan
 ```
+
+[HANDOFF.md](HANDOFF.md) · [WORKLOG.md](WORKLOG.md)
 
 ## Deployed addresses
 

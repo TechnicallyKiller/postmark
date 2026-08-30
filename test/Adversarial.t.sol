@@ -10,6 +10,7 @@ import {Currency} from "v4-core/types/Currency.sol";
 import {PoolKey} from "v4-core/types/PoolKey.sol";
 import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
 import {Hooks} from "v4-core/libraries/Hooks.sol";
+import {ModifyLiquidityParams} from "v4-core/types/PoolOperation.sol";
 import {PostmarkHook} from "../src/PostmarkHook.sol";
 import {FlowVault} from "../src/FlowVault.sol";
 
@@ -20,56 +21,127 @@ contract AdversarialTest is PostmarkTestBase {
         setUpPostmark();
     }
 
-    /// @notice A1: TWAP manipulation. The attacker executes an adverse swap, then pushes the price
-    /// back before settlement so the receipt reads benign.
+    /// @notice A1: TWAP manipulation. An informed trader whose call the market confirms pushes the
+    /// price back inside the settlement window so the receipt reads benign.
     ///
-    /// @dev The defence is NOT "manipulation always gets charged" — pushing the price back really
-    /// does flip the markout sign. The defence is that doing so costs more than it saves, because
-    /// alpha < 1 and the attacker pays fees and price impact on the manipulating leg. So this is an
-    /// EV test across two worlds, not an assertion about the charge.
+    /// @dev The scenario has to make the attacker genuinely toxic first, or there is no charge to
+    /// dodge and the test proves nothing. An earlier version of this test omitted the market leg:
+    /// both worlds settled at zero and it "passed" purely because the manipulating swap cost a fee.
+    ///
+    /// So: the attacker sells, the market sells after them (confirming they were informed), and in
+    /// world B they buy back immediately - early in the window, where a manipulated price carries
+    /// almost the whole TWAP weight. That is the strongest form of the attack, not the weakest.
+    ///
+    /// The defence is not that manipulation fails. It is that it costs more than it saves, because
+    /// alpha < 1 and the attacker pays fees and price impact on the manipulating leg.
     function test_A1_TWAPManipulation_NegativeEV() public {
-        uint256 notional = 1e15;
-        address attacker = address(0xbad);
-        fundTrader(attacker, 100 ether);
-        bond(attacker, hook.requiredBond(notional) * 10);
+        _deepenPool();
+
+        uint256 notional = 1e18;
+        address attacker = makeAddr("a1attacker");
+        address market = makeAddr("a1market");
+        fundTrader(attacker, 1e24);
+        fundTrader(market, 1e24);
+        bond(attacker, 1e22);
 
         uint256[] memory ids = new uint256[](1);
         ids[0] = 0;
         uint256 snap = vm.snapshotState();
 
-        // World A: settle honestly, eat whatever charge the markout implies.
-        vm.startPrank(attacker);
+        // ---- World A: informed trade, settled honestly. ----
+        vm.roll(100);
+        vm.prank(attacker);
         swap(key, true, -int256(notional), abi.encode(attacker));
-        vm.stopPrank();
-        vm.roll(block.number + hook.W() + 1);
+        vm.roll(101);
+        vm.prank(market);
+        swap(key, true, -int256(notional * 4), ZERO_BYTES); // market confirms: price falls further
+
+        vm.roll(100 + hook.W() + 1);
+        uint256 b = vault.balanceOf(attacker, bondCurrency);
         hook.settle(key, ids);
+        uint256 honestCharge = b - vault.balanceOf(attacker, bondCurrency);
         uint256 honestValue = _attackerValue(attacker);
 
         vm.revertToState(snap);
 
-        // World B: manipulate the price back inside the window, then settle.
-        vm.startPrank(attacker);
+        // ---- World B: same trade, same market move, buy back INSIDE the window. ----
+        vm.roll(100);
+        vm.prank(attacker);
         swap(key, true, -int256(notional), abi.encode(attacker));
-        vm.roll(block.number + hook.W() - 1);
-        swap(key, false, -int256(notional / 2), abi.encode(attacker));
-        vm.stopPrank();
-        vm.roll(block.number + 2);
+        vm.roll(101);
+        vm.prank(market);
+        swap(key, true, -int256(notional * 4), ZERO_BYTES);
+
+        // Buy back at the START of the window, so the manipulated price carries ~99/100 of the
+        // TWAP weight. Manipulating at the end would be the weak version of this attack.
+        vm.roll(102);
+        vm.prank(attacker);
+        swap(key, false, -int256(notional * 4), abi.encode(attacker));
+
+        vm.roll(100 + hook.W() + 1);
+        b = vault.balanceOf(attacker, bondCurrency);
         hook.settle(key, ids);
+        uint256 manipulatedCharge = b - vault.balanceOf(attacker, bondCurrency);
         uint256 manipulatedValue = _attackerValue(attacker);
 
-        console.log("attacker value, settled honestly  :", honestValue);
-        console.log("attacker value, after manipulating:", manipulatedValue);
+        vm.revertToState(snap);
 
-        assertLt(manipulatedValue, honestValue, "TWAP manipulation was profitable");
+        // ---- World C, the control: identical trades, buy-back moved AFTER the window closes. ----
+        // The buy-back is a profitable trade in its own right - the market's 4x sell left a
+        // dislocation. Comparing B against A would credit that trading profit to the manipulation.
+        // C isolates the effect: same two trades, same P&L, only the timing differs, so any gap
+        // between B and C is the manipulation and nothing else.
+        vm.roll(100);
+        vm.prank(attacker);
+        swap(key, true, -int256(notional), abi.encode(attacker));
+        vm.roll(101);
+        vm.prank(market);
+        swap(key, true, -int256(notional * 4), ZERO_BYTES);
+
+        vm.roll(100 + hook.W() + 1);
+        b = vault.balanceOf(attacker, bondCurrency);
+        hook.settle(key, ids);
+        uint256 controlCharge = b - vault.balanceOf(attacker, bondCurrency);
+
+        vm.roll(100 + hook.W() + 2);
+        vm.prank(attacker);
+        swap(key, false, -int256(notional * 4), abi.encode(attacker));
+        uint256 controlValue = _attackerValue(attacker);
+
+        console.log("charge, settled honestly     :", honestCharge);
+        console.log("charge, manipulated          :", manipulatedCharge);
+        console.log("charge, control (late buyback):", controlCharge);
+        console.log("value, manipulated           :", manipulatedValue);
+        console.log("value, control               :", controlValue);
+        honestValue;
+
+        // The setup must actually bite, or the comparison below is vacuous.
+        assertGt(honestCharge, 0, "scenario did not make the attacker toxic - test proves nothing");
+
+        // The defence, stated precisely: moving the same trade inside the window must not pay.
+        assertLe(
+            manipulatedValue,
+            controlValue,
+            "TWAP manipulation is profitable: timing the same buy-back inside the window beats timing it after"
+        );
     }
 
     /// @dev Attacker's total holdings: both tokens plus anything still in the vault. The pool sits
-    /// at ~1:1 so summing the legs is a fair proxy for value at these sizes.
+    /// near 1:1 so summing the legs is a fair proxy for value at these sizes.
     function _attackerValue(address who) internal view returns (uint256) {
         return MockERC20(Currency.unwrap(currency0)).balanceOf(who)
             + MockERC20(Currency.unwrap(currency1)).balanceOf(who) + vault.balanceOf(who, bondCurrency);
     }
 
+    /// @dev The shared fixture's pool is deliberately shallow, so a large swap fills for very little
+    /// and the tick barely moves. Adversarial scenarios need the price to actually respond.
+    function _deepenPool() internal {
+        modifyLiquidityRouter.modifyLiquidity(
+            key,
+            ModifyLiquidityParams({tickLower: -887220, tickUpper: 887220, liquidityDelta: 1e21, salt: 0}),
+            ZERO_BYTES
+        );
+    }
 
     // =========================================================================
     // A2: Sybil. Rotating fresh addresses cannot beat building a reputation.

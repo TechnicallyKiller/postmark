@@ -39,6 +39,63 @@ Rules:
 
 ---
 
+## A1 is broken — Sun 24 Aug — Claude
+
+**Status:** RED, and it is a real vulnerability in the core mechanism, not a test bug.
+
+**What happened**
+I had reported A1 green. It was passing for the wrong reason. Instrumenting the settle call showed
+**both worlds charged zero** — my scenario never made the attacker toxic in the first place, so
+there was no charge to dodge, and the test "passed" only because the manipulating swap cost a fee.
+Same class of defect as the `assertTrue(true)` I replaced, just better disguised.
+
+**The corrected test, and what it found**
+Three worlds, so the manipulation is isolated from the trading P&L of the manipulating leg:
+
+- **A. honest** — attacker sells, market sells after them (confirming they were informed), settle.
+- **B. manipulate** — same, plus the attacker buys back at block 102, early in the window where the
+  restored price carries ~99/100 of the TWAP weight.
+- **C. control** — identical trades to B, but the buy-back is moved to *after* the window closes.
+  Same P&L, no TWAP effect. B minus C is the manipulation and nothing else.
+
+```
+charge, settled honestly      : 4,709,311,900,217,532
+charge, manipulated           : 0
+charge, control (late buyback): 4,709,311,900,217,532
+gain from manipulating        : 4,709,311,900,217,532   (exactly the charge, to the wei)
+```
+
+**Moving the same trade inside the window instead of after it dodges 100% of the charge at zero
+cost.** The trades are identical; only the timing differs.
+
+**Why the plan's A1 reasoning does not hold.** It assumed a manipulator must *hold* a distorted
+price against arbitrageurs, paying the arb cost every block of the window. But the attacker here is
+not distorting anything — they are *restoring* the price toward where it started, which is the
+economically natural trade for them to make anyway. There is nothing for arbitrageurs to take, so
+the manipulation is free. Alpha < 1 bounds the charge; it does not bound this.
+
+**Options, roughly in order of how well they fit the project's own thesis**
+
+1. **Use the window's extremum, not its mean.** For a zeroForOne receipt take the *lowest* price
+   printed in the window as P_ref. An attacker cannot remove a price that already printed — which
+   is precisely the project's own line, "you cannot un-happen a price." This is the most elegant
+   fix and the most aligned. Cost: it overstates markout for benign flow hit by a transient wick,
+   so it probably wants a percentile rather than a strict min.
+2. **Chainlink as a second reference feeding a `min()`.** The build plan already names this as the
+   one sponsor integration that qualifies, "because it strengthens the A1 defence." It is now
+   clearly necessary rather than optional.
+3. **Discount the payer's own swaps inside their own window.** Cheap and targeted, but sybil-able:
+   the manipulating swap does not need to be bonded, so it can come from a fresh address.
+4. **Longer W.** Does not fix it. It only requires holding the restored price longer, and holding
+   costs nothing here.
+
+**Left for next session**
+- Decide between 1 and 2 above. This blocks the attack slide, and the attack slide is the pitch.
+- The test is left FAILING on purpose. It documents a live vulnerability; deleting or skipping it
+  would put the project back where it was this morning.
+
+---
+
 ## Days 7-9 — Sun 24 Aug — Claude
 
 **Gate:** A1-A5 all lose money for the attacker / Chart 1 exists / a judge could open the URL

@@ -259,6 +259,56 @@ def chart_effective_fee(df):
     return summary
 
 
+def chart_by_tier(df):
+    """Chart 1. Grouped by the tier Postmark ASSIGNED FROM HISTORY, not by each swap's own outcome.
+
+    The decile version of this chart buckets swaps by their own realized markout and then plots the
+    fee charged - which is close to tautological, since the fee is computed from that markout. This
+    one is the real claim: the mechanism looks only at a payer's past, sorts them into a tier, and
+    quotes a price. If the mean realized markout then rises monotonically across those tiers, the
+    reputation is genuinely predictive rather than merely arithmetic.
+    """
+    g = df.groupby("tier").agg(
+        swaps=("notional", "size"),
+        volume=("notional", "sum"),
+        markout=("markout_bps", "mean"),
+        fee=("pm_effective_fee_bps", "mean"),
+    )
+    g = g.reindex(range(len(TIER_FEE_BPS))).dropna(how="all")
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5.5))
+    x = np.arange(len(g))
+    labels = [f"T{int(i)}\n{TIER_FEE_BPS[int(i)]} bps quoted" for i in g.index]
+
+    ax1.bar(x, g["markout"], color="#f59e0b", alpha=0.9)
+    ax1.set_title("Realized toxicity of each tier's flow", fontsize=13)
+    ax1.set_ylabel("Mean realized markout (bps)", fontsize=11)
+    ax1.set_xlabel("Tier assigned from prior behaviour", fontsize=11)
+    ax1.set_xticks(x, labels, fontsize=9)
+    ax1.grid(axis="y", alpha=0.3)
+    for i, v in enumerate(g["markout"]):
+        ax1.text(i, v, f" {v:.2f}", ha="center", va="bottom", fontsize=10)
+
+    ax2.bar(x, g["fee"], color="#8b5cf6", alpha=0.9, label="Postmark, all-in effective fee")
+    ax2.axhline(BASELINE_FEE_BPS, color="#ef4444", linestyle="--", linewidth=2.5,
+                label=f"Vanilla pool ({BASELINE_FEE_BPS:.0f} bps)")
+    ax2.set_title("What each tier actually paid", fontsize=13)
+    ax2.set_ylabel("Effective fee (bps)", fontsize=11)
+    ax2.set_xlabel("Tier assigned from prior behaviour", fontsize=11)
+    ax2.set_xticks(x, labels, fontsize=9)
+    ax2.legend(loc="upper left", fontsize=10)
+    ax2.grid(axis="y", alpha=0.3)
+    for i, v in enumerate(g["fee"]):
+        ax2.text(i, v, f" {v:.2f}", ha="center", va="bottom", fontsize=10)
+
+    fig.suptitle("Postmark prices flow by who caused the loss, not by the weather",
+                 fontsize=15, y=1.0)
+    fig.tight_layout()
+    fig.savefig("chart_fee_by_tier.png", dpi=200, bbox_inches="tight")
+    print("  -> chart_fee_by_tier.png")
+    return g
+
+
 def chart_lp_pnl(df, n_boot=1000):
     # Bootstrap over DAYS, not over individual swaps: swaps within a day are not independent, and
     # resampling them individually would understate the true confidence interval.
@@ -350,7 +400,9 @@ def main():
     start_block, end_block = int(df["blockNumber"].min()), int(df["blockNumber"].max())
     df = simulate(df, start_block, end_block)
 
-    print("\nChart 1: effective fee by flow decile")
+    print("\nChart 1: effective fee by assigned tier")
+    tier_summary = chart_by_tier(df)
+    print("\nChart 1b: effective fee by realized-markout decile")
     summary = chart_effective_fee(df)
     print("\nChart 2: LP PnL vs vanilla")
     pnl = chart_lp_pnl(df)
@@ -362,7 +414,17 @@ def main():
     print(f"mean effective fee    : {df['pm_effective_fee_bps'].mean():.2f} bps (vanilla {BASELINE_FEE_BPS:.0f})")
     print(f"most benign decile    : {summary.iloc[0]:.2f} bps")
     print(f"most toxic decile     : {summary.iloc[-1]:.2f} bps")
-    print(f"staircase is monotone : {bool((summary.diff().dropna() >= -1e-9).all())}")
+    print(f"decile chart monotone : {bool((summary.diff().dropna() >= -1e-9).all())}")
+    print()
+    print("  by assigned tier (Chart 1 - the mechanism predicting, not just arithmetic):")
+    print(f"  {'tier':>5} {'swaps':>7} {'volume':>14} {'realized markout':>18} {'eff fee':>9}")
+    for t, r in tier_summary.iterrows():
+        print(f"  {int(t):>5} {int(r['swaps']):>7} {r['volume']:>14,.0f} "
+              f"{r['markout']:>17.2f} {r['fee']:>8.2f}")
+    mono = bool((tier_summary["markout"].diff().dropna() >= -1e-9).all())
+    print(f"  toxicity rises monotonically across tiers: {mono}")
+    sep = tier_summary['markout'].iloc[-1] / max(abs(tier_summary['markout'].iloc[0]), 1e-9)
+    print(f"  separation, tier 0 -> top tier: {sep:,.0f}x")
     if pnl:
         print(f"final LP PnL, Postmark: {pnl[0]:,.2f} USDC")
         print(f"final LP PnL, vanilla : {pnl[1]:,.2f} USDC")

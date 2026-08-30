@@ -83,14 +83,38 @@ contract PostmarkHook is BaseHook, IUnlockCallback {
     /// @dev Transient slot carrying the payer, bonded flag, and tier resolved in beforeSwap into afterSwap.
     bytes32 private constant PAYER_SLOT = keccak256("postmark.transient.payer");
 
+    /// @notice Address allowed to trip the emergency brake. Set once at deploy, never changeable.
+    address public immutable guardian;
+
+    /// @notice Once tripped, Postmark stops taking on new obligations: no new receipts, no new bond
+    /// locks, everyone quoted the baseline fee. Settlement of existing receipts, bond withdrawals
+    /// and every LP operation carry on untouched.
+    ///
+    /// @dev One-way by design (attack A5). A guardian who could switch it back off could use it to
+    /// stall settlement while the price moved. The worst a compromised guardian can do here is turn
+    /// Postmark into a plain 30 bps pool.
+    bool public emergencyMode;
+
     error NotDynamicFee();
+    error NotGuardian();
 
     event PoolRegistered(PoolId indexed poolId, Currency bondCurrency);
+    event EmergencyModeEngaged();
     event FeeQuoted(PoolId indexed poolId, address indexed payer, uint8 tier, uint24 fee, bool bondCovered);
 
-    constructor(IPoolManager _poolManager, IFlowVault _vault, IScoreRegistry _registry) BaseHook(_poolManager) {
+    constructor(IPoolManager _poolManager, IFlowVault _vault, IScoreRegistry _registry, address _guardian)
+        BaseHook(_poolManager)
+    {
         vault = _vault;
         registry = _registry;
+        guardian = _guardian;
+    }
+
+    /// @notice Trip the emergency brake. Cannot be undone.
+    function engageEmergencyMode() external {
+        if (msg.sender != guardian) revert NotGuardian();
+        emergencyMode = true;
+        emit EmergencyModeEngaged();
     }
 
     function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
@@ -164,7 +188,9 @@ contract PostmarkHook is BaseHook, IUnlockCallback {
 
         // Bonded means: enough free bond right now to cover this swap's requirement. A payer whose
         // bond is short is not rejected, they simply lose the discount for this swap.
-        bool bondCovered = vault.freeBalanceOf(payer, bondCurrency) >= requiredBond(notional);
+        // In emergency mode nobody is treated as bonded, so nobody gets a discount and afterSwap
+        // takes on no new obligation. The swap itself still goes through.
+        bool bondCovered = !emergencyMode && vault.freeBalanceOf(payer, bondCurrency) >= requiredBond(notional);
 
         uint8 tier = registry.tierOf(payer, bondCovered);
         uint24 fee = tierFee(tier);

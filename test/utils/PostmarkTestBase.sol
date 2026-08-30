@@ -23,6 +23,7 @@ abstract contract PostmarkTestBase is Deployers {
     ScoreRegistry internal registry;
     PoolId internal poolId;
     Currency internal bondCurrency;
+    address internal guardian = makeAddr("guardian");
 
     /// @dev Settlement window used across the suite, and the vault withdraw cooldown that must
     /// cover it.
@@ -39,9 +40,12 @@ abstract contract PostmarkTestBase is Deployers {
         registry = new ScoreRegistry();
 
         (address hookAddress, bytes32 salt) = HookMiner.find(
-            address(this), POSTMARK_FLAGS, type(PostmarkHook).creationCode, abi.encode(manager, vault, registry)
+            address(this),
+            POSTMARK_FLAGS,
+            type(PostmarkHook).creationCode,
+            abi.encode(manager, vault, registry, guardian)
         );
-        hook = new PostmarkHook{salt: salt}(IPoolManager(address(manager)), vault, registry);
+        hook = new PostmarkHook{salt: salt}(IPoolManager(address(manager)), vault, registry, guardian);
         require(address(hook) == hookAddress, "hook address mismatch");
 
         vault.setHook(address(hook));

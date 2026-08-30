@@ -2,7 +2,7 @@
 
 **Read this first, then [WORKLOG.md](WORKLOG.md) for the running log.**
 
-Last updated: 2026-08-24. Days 1-6 are implemented and **all 42 tests are green.** Day 4's correctness gate is closed with an exact match; Day 3's gas hard stop is met in steady state but the 40k target is not. See [WORKLOG.md](WORKLOG.md).
+Last updated: 2026-08-24. Days 1-9 are implemented; **46 Solidity tests and 22 backtest-math checks are green.** Day 4's correctness gate is closed with an exact match and the full A1-A5 suite passes. Two things are genuinely outstanding: **the charts need an archive RPC key**, and there is **no frontend**. See [WORKLOG.md](WORKLOG.md).
 Repo: `TechnicallyKiller/postmark` (private) · Deadline: submit **Thu Sep 3**, demo day **Sep 11**.
 
 ---
@@ -51,12 +51,23 @@ Full pitch and parameter tables are in [README.md](README.md). Full ten-day plan
 | **Day 4** | Settlement math | charge ≈ known realized LVR | ✅ exact match, [test/SettlementMath.t.sol](test/SettlementMath.t.sol) |
 | **Day 5** | Rebates, EWMA, cross-pool registry | benign payer's fee declines over 20 swaps | ✅ |
 | **Day 6** | Bond invariant property test | locked bond ≥ chargeable amount | ✅ |
-| **Day 7** | Adversarial suite | A1–A5 all lose money for the attacker | ⚠️ A1 real, A2–A5 shallow |
-| **Day 8** | Backtest harness | Chart 1 shows the staircase | ⚠️ charts exist, unverified |
+| **Day 7** | Adversarial suite | A1–A5 all lose money for the attacker | ✅ [test/Adversarial.t.sol](test/Adversarial.t.sol) |
+| **Day 8** | Backtest harness | Chart 1 shows the staircase | ⚠️ harness + math tested, **charts need an archive RPC** |
+| **Day 9** | Deploy + scoreboard | a judge could open the URL and swap | ⚠️ deploy verified locally, **no frontend** |
 
-**42 tests passing, none red.**
+**46 Solidity tests + 22 backtest-math checks, none red.**
 
-### The one gate still open
+### The two things blocking submission
+
+**Chart 1 needs an archive RPC key.** The plan says never cut it. The harness is rewritten to match
+the contract and its math is unit tested; it just cannot fetch data from a public endpoint. Get a
+free Alchemy or Infura key, `export ETH_RPC_URL=...`, run `python3 scripts/backtest.py`. Everything
+else is in place. Note the charts previously in the repo were deleted — they came from a simulation
+whose cap was 50x the contract's and which omitted the upfront fee, so they overstated the result.
+
+**There is no frontend.** `getReceipt` and `receiptCount` are exposed on the hook for it.
+
+### The gate still open
 
 **Day 3 — the 40k target.** Steady-state overhead is 77,162, under the plan's 80k hard stop but
 roughly double its 40k target. This is now an architecture question rather than tuning: ~55k is paid

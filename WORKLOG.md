@@ -39,6 +39,68 @@ Rules:
 
 ---
 
+## Days 7-9 — Sun 24 Aug — Claude
+
+**Gate:** A1-A5 all lose money for the attacker / Chart 1 exists / a judge could open the URL
+**Status:** Day 7 GREEN. Day 8 harness green, charts BLOCKED on an archive RPC. Day 9 deploy
+verified locally, no frontend yet.
+
+**Done**
+- **Emergency brake (A5 needed a feature that did not exist).** A one-way guardian switch that
+  stops Postmark taking on new obligations - no new receipts, no new bond locks, everyone quoted
+  the baseline - while never blocking a swap, a settlement, an LP withdrawal or a bond withdrawal.
+  One-way on purpose: a guardian who could release it could stall settlement while the price moved.
+  Note this reads better than the plan's "pauses swaps", which would contradict never reverting on
+  a swap.
+- **A2-A5 rewritten to measure the attacker's money.** They previously asserted almost nothing.
+- **Backtest rewritten.** The old one did not match the contract in two ways that both flattered
+  the result: the per-receipt cap was `0.5 * notional` (5000 bps) against the contract's 100 bps,
+  and the effective fee counted only the ex-post charge, ignoring the 2-30 bps quoted up front - so
+  Chart 1 showed benign flow at 0 bps instead of the 2 bps floor, and Chart 2 gave Postmark LPs no
+  fee income at all. W was 12 against the contract's 5, and no tier or reputation state was
+  modelled. It now replays per-payer EWMA and tier evolution in order, keyed on the Swap event's
+  sender - the same per-router attribution the hook uses in v1.
+- **The committed charts were deleted, not regenerated.** They came from the buggy simulation and
+  overstated the mechanism. Regenerating needs an archive RPC.
+- `scripts/test_backtest.py` covers the simulation math and deliberately writes no chart. A
+  synthetic chart that leaked into the deck would be worse than no chart.
+- **Deploy script**, verified end to end against anvil with a real PoolManager.
+
+**Decisions**
+- Deploy mines the hook against the canonical CREATE2 proxy, not the EOA. Mining against the EOA
+  gives a salt that produces a different address when broadcast, and the constructor's permission
+  check then reverts. No chain addresses are hardcoded - POOL_MANAGER comes from env.
+- Chart 2 bootstraps over **days**, not individual swaps. Swaps within a day are not independent,
+  so resampling them individually would understate the confidence interval. The plan said days.
+
+**Broke / cost me time**
+- The default RPC in the old backtest (`eth.llamarpc.com`) is dead - HTTP 521. Public endpoints
+  refuse archive reads entirely, so the harness cannot run here at all. It now fails loudly with
+  the reason instead of printing "No events fetched" and exiting 0.
+- `vm.cool` had no measurable effect in this Foundry build. `forge test --isolate` is what reflects
+  per-transaction cold access.
+- Backticks in a `git commit -m` on the command line get command-substituted by bash and silently
+  eat the word. Use `-F` with a message file.
+
+**Left for next session**
+- **Charts. This is the one that matters.** The plan says never cut Chart 1. Needs a free Alchemy
+  or Infura key, then `python3 scripts/backtest.py`. Everything else is ready.
+- **Frontend scoreboard** - nothing built. `getReceipt` and `receiptCount` are exposed for it.
+- **The 40k gas target**, still an architecture question.
+- `DUST_THRESHOLD = 1e7` is ~1e-11 tokens at 18 decimals; not a meaningful spam filter yet.
+- `W = 5` is ~5s on Unichain. The A1 margin is thin and W is why.
+- Markout is tick-granular (1 bp) against 2-30 bps fees.
+
+**Numbers**
+- A2: rotating sybils paid **1.8e13** in fees against **8.9e12** for one address that settles - 2.02x.
+- A3: round trip cost **3.0e12 of token0**, token1 leg closed out exactly, **zero rebates earned**.
+- A4: 20 dust swaps, **0 receipts, 0 bond locked**, 3.9M gas burned.
+- A1: attacker ends **2.37e9 wei poorer** by manipulating (W=5, alpha=0.6). Negative but thin.
+- Deploy: hook low 14 bits **0x10c0**, exactly the declared permissions.
+- Suite: **46 Solidity tests + 22 backtest-math checks, all green.**
+
+---
+
 ## Days 3-4 gates closed — Sun 24 Aug — Claude
 
 **Gate:** Day 4 charge ~= known realized LVR; Day 3 overhead under 40k (hard stop 80k)

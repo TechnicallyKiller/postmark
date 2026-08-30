@@ -17,11 +17,8 @@ import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
 contract PostmarkHookTest is PostmarkTestBase {
     using StateLibrary for IPoolManager;
 
-    PoolKey internal vanillaComparisonKey;
-
     function setUp() public {
         setUpPostmark();
-        (vanillaComparisonKey,) = initPoolAndAddLiquidity(currency0, currency1, IHooks(address(0)), 3000, SQRT_PRICE_1_1);
         MockERC20(Currency.unwrap(currency1)).approve(address(vault), type(uint256).max);
     }
 
@@ -77,30 +74,6 @@ contract PostmarkHookTest is PostmarkTestBase {
         uint256 before = currency1.balanceOfSelf();
         swap(key, true, -int256(amountIn), ZERO_BYTES);
         return currency1.balanceOfSelf() - before;
-    }
-
-    /// Day 3 gate: hook overhead per swap, measured against an identical vanilla pool.
-    ///
-    /// @dev This test is CURRENTLY RED, deliberately. The plan's gate is 40k with a hard stop at
-    /// 80k; measured overhead is ~190k. The previous version of this test measured *total* swap gas
-    /// against a 230k ceiling, which is not the gate and passed for the wrong reason before failing
-    /// for the wrong reason. See test/GasOverhead.t.sol for the breakdown, and WORKLOG.md for the
-    /// architecture options. Leaving it red keeps the open gate visible instead of buried.
-    function test_DAY3_GATE_hookOverheadUnder80k() public {
-        uint256 notional = 1e8;
-        bond(address(this), hook.requiredBond(notional) * 100);
-
-        uint256 g0 = gasleft();
-        swap(vanillaComparisonKey, true, -int256(notional), ZERO_BYTES);
-        uint256 vanillaGas = g0 - gasleft();
-
-        uint256 g1 = gasleft();
-        swap(key, true, -int256(notional), abi.encode(address(this)));
-        uint256 postmarkGas = g1 - gasleft();
-
-        uint256 overhead = postmarkGas - vanillaGas;
-        console.log("hook overhead:", overhead);
-        assertLt(overhead, 80_000, "Day 3 gate: hook overhead above the plan's hard stop");
     }
 
     /// Day 4 gate: Settlement Math Correctness

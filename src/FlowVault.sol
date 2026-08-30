@@ -24,9 +24,17 @@ contract FlowVault is IFlowVault {
 
     address public immutable deployer;
 
-    mapping(address payer => mapping(Currency => uint256)) private _balance;
-    mapping(address payer => mapping(Currency => uint256)) private _locked;
-    mapping(address payer => uint64 blockNumber) public lastActivityBlock;
+    /// @dev Balance, lock and cooldown timestamp share one storage slot per (payer, currency).
+    /// Locking a bond is on the swap hot path, so it must touch exactly one slot: as three separate
+    /// mappings this cost two extra cold SSTOREs (~22k) on every swap that wrote a receipt.
+    /// `uint112` holds 5.19e33 wei, or 5.19e15 tokens at 18 decimals.
+    struct Account {
+        uint112 balance; // 112 bits ┐
+        uint112 locked; // 112 bits │ one slot
+        uint32 lastActivityBlock; //  32 bits ┘
+    }
+
+    mapping(address payer => mapping(Currency => Account)) private _accounts;
 
     error HookAlreadySet();
     error NotDeployer();
@@ -36,6 +44,7 @@ contract FlowVault is IFlowVault {
     error BondStillLocked();
     error CooldownActive();
     error ZeroAmount();
+    error AmountTooLarge();
 
     constructor(uint32 _withdrawCooldownBlocks) {
         deployer = msg.sender;
@@ -68,7 +77,11 @@ contract FlowVault is IFlowVault {
         if (currency.isAddressZero()) revert NativeNotSupported();
 
         IERC20(Currency.unwrap(currency)).safeTransferFrom(msg.sender, address(this), amount);
-        _balance[payer][currency] += amount;
+
+        Account storage acct = _accounts[payer][currency];
+        uint256 next = uint256(acct.balance) + amount;
+        if (next > type(uint112).max) revert AmountTooLarge();
+        acct.balance = uint112(next);
 
         emit Deposited(payer, currency, amount);
     }
@@ -77,13 +90,15 @@ contract FlowVault is IFlowVault {
     /// have elapsed since the payer's last swap, so the settlement window cannot be outrun.
     function withdraw(Currency currency, uint256 amount, address to) external {
         if (amount == 0) revert ZeroAmount();
-        if (_locked[msg.sender][currency] != 0) revert BondStillLocked();
-        if (block.number < lastActivityBlock[msg.sender] + withdrawCooldownBlocks) revert CooldownActive();
 
-        uint256 bal = _balance[msg.sender][currency];
+        Account storage acct = _accounts[msg.sender][currency];
+        if (acct.locked != 0) revert BondStillLocked();
+        if (block.number < uint256(acct.lastActivityBlock) + withdrawCooldownBlocks) revert CooldownActive();
+
+        uint256 bal = acct.balance;
         if (amount > bal) revert InsufficientFreeBalance();
         unchecked {
-            _balance[msg.sender][currency] = bal - amount;
+            acct.balance = uint112(bal - amount);
         }
 
         IERC20(Currency.unwrap(currency)).safeTransfer(to, amount);
@@ -95,15 +110,20 @@ contract FlowVault is IFlowVault {
     // -------------------------------------------------------------------------
 
     function balanceOf(address payer, Currency currency) external view returns (uint256) {
-        return _balance[payer][currency];
+        return _accounts[payer][currency].balance;
     }
 
     function lockedOf(address payer, Currency currency) external view returns (uint256) {
-        return _locked[payer][currency];
+        return _accounts[payer][currency].locked;
     }
 
     function freeBalanceOf(address payer, Currency currency) public view returns (uint256) {
-        return _balance[payer][currency] - _locked[payer][currency];
+        Account storage acct = _accounts[payer][currency];
+        return uint256(acct.balance) - uint256(acct.locked);
+    }
+
+    function lastActivityBlock(address payer, Currency currency) external view returns (uint256) {
+        return _accounts[payer][currency].lastActivityBlock;
     }
 
     // -------------------------------------------------------------------------
@@ -113,18 +133,24 @@ contract FlowVault is IFlowVault {
     /// @dev Returns false rather than reverting when the bond is short. beforeSwap uses that to
     /// fall back to the top tier instead of failing the swap.
     function lock(address payer, Currency currency, uint256 amount) external onlyHook returns (bool) {
-        if (amount > freeBalanceOf(payer, currency)) return false;
-        _locked[payer][currency] += amount;
-        lastActivityBlock[payer] = uint64(block.number);
+        Account storage acct = _accounts[payer][currency];
+        // One slot read, one slot write: this runs inside afterSwap on every receipt.
+        Account memory a = acct;
+        if (amount > uint256(a.balance) - uint256(a.locked)) return false;
+
+        acct.locked = uint112(uint256(a.locked) + amount);
+        acct.lastActivityBlock = uint32(block.number);
+
         emit Locked(payer, currency, amount);
         return true;
     }
 
     function unlock(address payer, Currency currency, uint256 amount) external onlyHook {
-        uint256 locked_ = _locked[payer][currency];
+        Account storage acct = _accounts[payer][currency];
+        uint256 locked_ = acct.locked;
         uint256 released = amount > locked_ ? locked_ : amount;
         unchecked {
-            _locked[payer][currency] = locked_ - released;
+            acct.locked = uint112(locked_ - released);
         }
         emit Unlocked(payer, currency, released);
     }
@@ -137,7 +163,8 @@ contract FlowVault is IFlowVault {
         returns (uint256 taken)
     {
         taken = _take(payer, currency, amount);
-        _balance[to][currency] += taken;
+        Account storage dest = _accounts[to][currency];
+        dest.balance = uint112(uint256(dest.balance) + taken);
         emit Debited(payer, currency, taken, to);
     }
 
@@ -157,20 +184,24 @@ contract FlowVault is IFlowVault {
         uint256 pool = freeBalanceOf(msg.sender, currency);
         uint256 paid = amount > pool ? pool : amount;
         if (paid == 0) return;
+
+        Account storage from = _accounts[msg.sender][currency];
+        Account storage to = _accounts[payer][currency];
         unchecked {
-            _balance[msg.sender][currency] -= paid;
+            from.balance = uint112(uint256(from.balance) - paid);
         }
-        _balance[payer][currency] += paid;
+        to.balance = uint112(uint256(to.balance) + paid);
         emit Credited(payer, currency, paid);
     }
 
     function _take(address payer, Currency currency, uint256 amount) private returns (uint256 taken) {
-        uint256 locked_ = _locked[payer][currency];
+        Account storage acct = _accounts[payer][currency];
+        uint256 locked_ = acct.locked;
         taken = amount > locked_ ? locked_ : amount;
         if (taken == 0) return 0;
         unchecked {
-            _locked[payer][currency] = locked_ - taken;
-            _balance[payer][currency] -= taken;
+            acct.locked = uint112(locked_ - taken);
+            acct.balance = uint112(uint256(acct.balance) - taken);
         }
     }
 }

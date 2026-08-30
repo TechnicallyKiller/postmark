@@ -39,6 +39,60 @@ Rules:
 
 ---
 
+## A1 closed — extremum instead of mean — Sun 24 Aug — Claude
+
+**Status:** GREEN. The vulnerability logged in the previous entry is fixed, and the economics
+improved rather than degraded.
+
+**The fix**
+Settlement now prices against the most adverse tick that PRINTED inside the window
+(`PriceAccumulator.extremeTickOver`) rather than the window's mean. A mean can be un-done; an
+extremum cannot. This is the project's own claim - you cannot un-happen a price - which the mean
+version had quietly abandoned.
+
+Direction: a zeroForOne receipt (payer sold token0) is priced against the window LOW, a oneForZero
+receipt against the window HIGH.
+
+**Result on the same three-world test**
+```
+                        before          after
+charge, honest          4,709,311,900,217,532    4,768,685,330,861,540
+charge, manipulated                         0    4,768,685,330,861,540
+charge, control         4,709,311,900,217,532    4,768,685,330,861,540
+```
+All three now identical. Moving the same trade inside the window buys exactly nothing.
+
+**The economics got better, not worse**
+The worry with an extremum is that it over-punishes benign flow caught by a transient wick. On the
+real 627-swap sample it does not: tier 0 still pays the 2.29 bps floor, because those payers'
+markouts stay small enough that the charge never lifts them off it.
+
+```
+                    mean-TWAP      extremum
+mean effective fee    11.43 bps     15.55 bps
+tier 0 pays            2.29 bps      2.29 bps   <- benign flow unchanged
+tier 3 pays           47.25 bps     52.37 bps
+LP PnL, Postmark       3,592.53      6,899.45
+LP PnL, vanilla        2,569.85      2,592.84
+```
+Postmark LPs now finish 2.66x ahead of a flat 30 bps pool, up from 1.40x.
+
+**Decisions**
+- **The backtest now carries two reference prices, deliberately.** Billing uses the extremum;
+  LP PnL accounting uses the window mean, because the mean is the adverse selection the LPs
+  actually suffered. Booking the extremum as the LP's loss would overstate the damage in *both*
+  pools and flatter the comparison. Caught this when vanilla PnL went negative on the first run.
+- Tier separation fell from 268x to 78x because the extremum lifts tier 0's measured markout from
+  0.11 to 0.48 bps - that is the wick effect, visible but not economically material.
+- A percentile reference (say the 10th percentile rather than the strict low) is the obvious
+  refinement if wicks become a problem on a longer sample. Not needed on this data.
+
+**Numbers**
+- Solidity: 45 passing, 1 failing (Day 3 gas gate, deliberate).
+- Backtest math: 24 checks, all passing.
+
+---
+
 ## A1 is broken — Sun 24 Aug — Claude
 
 **Status:** RED, and it is a real vulnerability in the core mechanism, not a test bug.

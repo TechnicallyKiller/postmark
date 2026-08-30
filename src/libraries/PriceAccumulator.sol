@@ -65,7 +65,50 @@ library PriceAccumulator {
         history.count = uint128(total + 1);
     }
 
+    /// @notice The most adverse-to-the-payer tick printed in [startBlock, endBlock].
+    ///
+    /// @dev This, not the mean, is what settlement prices against. A mean can be un-done: a payer
+    /// who traded ahead of a move can trade back inside their own window, pull the average toward
+    /// their execution price, and settle for nothing — and because trading back is the
+    /// economically natural move for them anyway, it costs them nothing to do it. Measured on a
+    /// three-world test, that dodged 100% of the charge at zero cost.
+    ///
+    /// An extremum cannot be un-done. Once the price has printed a low, no later trade removes it.
+    /// That is the property the whole design rests on: you cannot un-happen a price.
+    ///
+    /// @param wantMin true for a zeroForOne receipt (the payer sold token0, so a LOW reference
+    /// price is the adverse one), false for oneForZero.
+    function extremeTickOver(
+        mapping(PoolId => ObservationHistory) storage histories,
+        PoolId poolId,
+        uint40 startBlock,
+        uint40 endBlock,
+        bool wantMin
+    ) internal view returns (int24) {
+        ObservationHistory storage history = histories[poolId];
+        if (history.count == 0) revert NoObservations();
+        if (endBlock <= startBlock) revert InvalidWindow();
+
+        uint256 total = history.count;
+        uint256 live = total < CARDINALITY ? total : CARDINALITY;
+        uint256 oldestPos = total - live;
+
+        // Start from the tick that was already in effect when the window opened.
+        uint256 pos = _positionAt(history, startBlock);
+        int24 best = history.observations[(oldestPos + pos) % CARDINALITY].tick;
+
+        // Then walk forward over every price that printed inside the window.
+        for (uint256 i = pos + 1; i < live; ++i) {
+            Observation memory o = history.observations[(oldestPos + i) % CARDINALITY];
+            if (o.blockNumber > endBlock) break;
+            if (wantMin ? o.tick < best : o.tick > best) best = o.tick;
+        }
+        return best;
+    }
+
     /// @notice Time-weighted average tick over [startBlock, endBlock].
+    /// @dev Retained for comparison and analysis. Settlement uses `extremeTickOver` — see the note
+    /// there for why a mean is not safe to bill against.
     function twapOver(
         mapping(PoolId => ObservationHistory) storage histories,
         PoolId poolId,
@@ -84,8 +127,34 @@ library PriceAccumulator {
     }
 
     /// @dev Cumulative tick at an arbitrary block, interpolating from the observation in effect.
-    /// @dev Searches over logical positions [0, live) and maps each to its ring slot, so the binary
-    /// search still sees observations in ascending block order after the ring has wrapped.
+    /// @dev Logical index of the newest observation at or before `targetBlock`, clamped to the
+    /// oldest surviving one. Searches over logical positions [0, live) and maps each to its ring
+    /// slot, so the search still sees ascending block order after the ring has wrapped.
+    function _positionAt(ObservationHistory storage history, uint40 targetBlock)
+        private
+        view
+        returns (uint256)
+    {
+        uint256 total = history.count;
+        uint256 live = total < CARDINALITY ? total : CARDINALITY;
+        uint256 oldestPos = total - live;
+        uint256 high = live - 1;
+
+        if (history.observations[(oldestPos + high) % CARDINALITY].blockNumber <= targetBlock) return high;
+        if (history.observations[oldestPos % CARDINALITY].blockNumber >= targetBlock) return 0;
+
+        uint256 low = 0;
+        while (low < high) {
+            uint256 mid = (low + high + 1) / 2;
+            if (history.observations[(oldestPos + mid) % CARDINALITY].blockNumber <= targetBlock) {
+                low = mid;
+            } else {
+                high = mid - 1;
+            }
+        }
+        return low;
+    }
+
     function _cumulativeAt(ObservationHistory storage history, uint40 targetBlock)
         private
         view
@@ -93,8 +162,7 @@ library PriceAccumulator {
     {
         uint256 total = history.count;
         uint256 live = total < CARDINALITY ? total : CARDINALITY;
-        uint256 oldestPos = total - live; // logical index of the oldest surviving observation
-
+        uint256 oldestPos = total - live;
         uint256 high = live - 1;
 
         // After the newest observation: extrapolate forward at the tick still in effect.
@@ -109,18 +177,8 @@ library PriceAccumulator {
         Observation memory oldest = history.observations[oldestPos % CARDINALITY];
         if (oldest.blockNumber >= targetBlock) return oldest.cumulativeTick;
 
-        // Binary search for the newest observation at or before targetBlock.
-        uint256 low = 0;
-        while (low < high) {
-            uint256 mid = (low + high + 1) / 2;
-            if (history.observations[(oldestPos + mid) % CARDINALITY].blockNumber <= targetBlock) {
-                low = mid;
-            } else {
-                high = mid - 1;
-            }
-        }
-
-        Observation memory obs = history.observations[(oldestPos + low) % CARDINALITY];
+        uint256 pos = _positionAt(history, targetBlock);
+        Observation memory obs = history.observations[(oldestPos + pos) % CARDINALITY];
         int256 delta = int256(uint256(targetBlock - obs.blockNumber));
         return obs.cumulativeTick + int192(int256(obs.tick) * delta);
     }

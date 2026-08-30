@@ -186,7 +186,7 @@ def simulate(df, start_block, end_block):
 
     lam = LAMBDA_BPS / 10_000
     scores, settled = {}, {}
-    upfront_bps, charges, markouts, tiers = [], [], [], []
+    upfront_bps, charges, markouts, true_markouts, tiers = [], [], [], [], []
 
     for _, row in tqdm(df.iterrows(), total=len(df), desc="Replaying swaps"):
         payer = row["sender"]
@@ -200,11 +200,23 @@ def simulate(df, start_block, end_block):
         # 2. settle: markout against the W-block TWAP of the pool's own price path.
         b = int(row["blockNumber"])
         window_end = min(b + W, end_block)
-        p_ref = series.loc[b:window_end, "price"].mean()
-        ratio = p_ref / row["price"]
-        # zeroForOne sells token0: a higher reference price means they sold too cheap, so benign.
-        diff = (1 - ratio) if row["zeroForOne"] else (ratio - 1)
-        markout = diff * row["notional"]
+        window = series.loc[b:window_end, "price"]
+
+        # Two different questions, two different reference prices.
+        #
+        # BILLING uses the most adverse price that PRINTED in the window. A mean can be un-done -
+        # a payer trades back inside their own window, pulls the average to their execution price
+        # and settles for nothing, at no cost to themselves. An extremum cannot be un-done. This
+        # mirrors PriceAccumulator.extremeTickOver; see test_A1.
+        p_bill = window.min() if row["zeroForOne"] else window.max()
+        # ACCOUNTING uses the window mean, because that is the adverse selection the LPs actually
+        # suffered. Billing against the extremum and then also booking it as the LP's loss would
+        # overstate the damage in both pools and flatter the comparison.
+        p_true = window.mean()
+
+        sign = -1.0 if row["zeroForOne"] else 1.0
+        markout = sign * (p_bill / row["price"] - 1) * row["notional"]
+        true_markout = sign * (p_true / row["price"] - 1) * row["notional"]
 
         charge = max(0.0, markout) * (ALPHA_BPS / 10_000)
         charge = min(charge, row["notional"] * MAX_CHARGE_BPS / 10_000)
@@ -217,6 +229,7 @@ def simulate(df, start_block, end_block):
         upfront_bps.append(fee_bps)
         charges.append(charge)
         markouts.append(markout)
+        true_markouts.append(true_markout)
         tiers.append(tier)
 
     df = df.copy()
@@ -225,6 +238,7 @@ def simulate(df, start_block, end_block):
     df["upfront_fee"] = df["notional"] * df["upfront_fee_bps"] / 10_000
     df["markout"] = markouts
     df["markout_bps"] = (df["markout"] / df["notional"]) * 10_000
+    df["true_markout"] = true_markouts
     df["pm_charge"] = charges
 
     # What the payer actually paid, all in: the fee quoted up front plus the ex-post charge. The
@@ -232,9 +246,11 @@ def simulate(df, start_block, end_block):
     df["pm_effective_fee_bps"] = ((df["upfront_fee"] + df["pm_charge"]) / df["notional"]) * 10_000
     df["vanilla_fee"] = (BASELINE_FEE_BPS / 10_000) * df["notional"]
 
-    # LPs keep the whole upfront fee plus their share of the charge, and eat the markout either way.
-    df["pm_pnl"] = df["upfront_fee"] + LP_SHARE * df["pm_charge"] - df["markout"]
-    df["vanilla_pnl"] = df["vanilla_fee"] - df["markout"]
+    # LPs keep the whole upfront fee plus their share of the charge, and eat the ACTUAL adverse
+    # selection either way - the same loss in both pools, so the comparison is fee revenue against
+    # a common cost.
+    df["pm_pnl"] = df["upfront_fee"] + LP_SHARE * df["pm_charge"] - df["true_markout"]
+    df["vanilla_pnl"] = df["vanilla_fee"] - df["true_markout"]
     return df
 
 

@@ -297,8 +297,18 @@ contract PostmarkHook is BaseHook, IUnlockCallback {
         uint256 notional = receipt.notional;
         int256 markout;
         {
-            int24 tickRef = PriceAccumulator.twapOver(priceHistory, poolId, receipt.blockNumber, receipt.blockNumber + W);
-            
+            bool zeroForOne_ = (receipt.flags & 1) == 1;
+
+            // The reference price is the most adverse tick that PRINTED inside the window, not the
+            // window's average. A mean can be un-done: a payer who traded ahead of a move can trade
+            // back inside their own window, pull the average toward their execution price, and
+            // settle for nothing. Because trading back is the move they wanted anyway, it costs them
+            // nothing — measured on a three-world test, it dodged the entire charge for free.
+            // An extremum cannot be un-done, which is the property this design claims.
+            int24 tickRef = PriceAccumulator.extremeTickOver(
+                priceHistory, poolId, receipt.blockNumber, receipt.blockNumber + W, zeroForOne_
+            );
+
             uint160 sqrtPExec = TickMath.getSqrtPriceAtTick(receipt.tickAfter);
             uint160 sqrtPRef = TickMath.getSqrtPriceAtTick(tickRef);
 
@@ -308,9 +318,7 @@ contract PostmarkHook is BaseHook, IUnlockCallback {
                 ratioX96 = FullMath.mulDiv(R, R, FixedPoint96.Q96);
             }
 
-            bool zeroForOne = (receipt.flags & 1) == 1;
-
-            int256 diffX96 = zeroForOne
+            int256 diffX96 = zeroForOne_
                 ? int256(uint256(FixedPoint96.Q96)) - int256(ratioX96)
                 : int256(ratioX96) - int256(uint256(FixedPoint96.Q96));
 

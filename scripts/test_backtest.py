@@ -60,10 +60,15 @@ def test_markout_sign():
           f"got {out['markout'].iloc[0]:.4f}")
 
     # Same move, but the payer was selling token0 - they sold too cheap, so benign.
+    # Under extremum billing a seller is priced against the window's LOW. Here the low IS their own
+    # execution price (the market only went up), so the billing markout is exactly zero rather than
+    # negative. Not charged, which is the property that matters.
     df = _frame([1.0] + [1.02] * (W + 2), zero_for_one=True)
     out = simulate(df, 100, int(df["blockNumber"].max()))
-    check("same move for a seller is benign", out["markout"].iloc[0] < 0,
+    check("same move for a seller is not charged", out["markout"].iloc[0] <= 0,
           f"got {out['markout'].iloc[0]:.4f}")
+    check("  and the accounting markout is genuinely negative", out["true_markout"].iloc[0] < 0,
+          f"got {out['true_markout'].iloc[0]:.4f}")
 
 
 def test_charge_is_alpha_and_capped():
@@ -127,12 +132,18 @@ def test_lp_pnl_accounting():
     df = _frame([1.0] + [1.005] * (W + 2), zero_for_one=False)
     out = simulate(df, 100, int(df["blockNumber"].max()))
     row = out.iloc[0]
-    expected = row["upfront_fee"] + LP_SHARE * row["pm_charge"] - row["markout"]
+    # PnL is booked against true_markout - the adverse selection that actually happened - not
+    # against the extremum used for billing. Booking the extremum as the LP's loss would overstate
+    # the damage in both pools.
+    expected = row["upfront_fee"] + LP_SHARE * row["pm_charge"] - row["true_markout"]
     check("LP keeps the upfront fee plus its share of the charge",
           abs(row["pm_pnl"] - expected) < 1e-9)
     check("LP share nets out keeper and rebate", abs(LP_SHARE - 0.80) < 1e-12)
-    check("vanilla PnL is the flat fee minus the markout",
-          abs(row["vanilla_pnl"] - (row["notional"] * BASELINE_FEE_BPS / 10_000 - row["markout"])) < 1e-9)
+    check("vanilla PnL is the flat fee minus the true markout",
+          abs(row["vanilla_pnl"] - (row["notional"] * BASELINE_FEE_BPS / 10_000 - row["true_markout"])) < 1e-9)
+    check("billing markout is at least the accounting markout",
+          row["markout"] >= row["true_markout"] - 1e-9,
+          "the extremum must never be less adverse than the mean")
 
 
 if __name__ == "__main__":

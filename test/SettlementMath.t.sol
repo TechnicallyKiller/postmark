@@ -61,7 +61,9 @@ contract SettlementMathTest is PostmarkTestBase {
         vm.roll(100 + hook.W());
 
         // --- independently derived expectation -------------------------------------------------
-        int24 expectedTickRef = int24((int256(t1) + int256(t2) * int256(uint256(hook.W() - 1))) / int256(uint256(hook.W())));
+        // Settlement prices against the most adverse tick that PRINTED in the window, not its mean.
+        // The payer bought token0, so the adverse direction is up, and the window's high is t2.
+        int24 expectedTickRef = t2 > t1 ? t2 : t1;
         uint256 expectedCharge = _expectedCharge(notional, t1, expectedTickRef);
 
         // --- what the contract actually does ---------------------------------------------------
@@ -74,7 +76,7 @@ contract SettlementMathTest is PostmarkTestBase {
 
         console.log("tick at execution   :", int256(t1));
         console.log("tick after market   :", int256(t2));
-        console.log("expected TWAP tick  :", int256(expectedTickRef));
+        console.log("expected ref tick   :", int256(expectedTickRef));
         console.log("notional            :", notional);
         console.log("expected charge     :", expectedCharge);
         console.log("actual charge       :", actualCharge);
@@ -100,7 +102,7 @@ contract SettlementMathTest is PostmarkTestBase {
         (, int24 t2,,) = manager.getSlot0(poolId);
 
         vm.roll(100 + hook.W() + 1);
-        int24 tickRef = int24((int256(r.tickAfter) + int256(t2) * int256(uint256(hook.W() - 1))) / int256(uint256(hook.W())));
+        int24 tickRef = t2 > r.tickAfter ? t2 : r.tickAfter; // window high, adverse for a buyer
 
         uint256 grossMarkout = _markout(uint256(r.notional), r.tickAfter, tickRef);
         uint256 before = vault.balanceOf(arb, bondCurrency);

@@ -2,7 +2,7 @@
 
 **Read this first, then [WORKLOG.md](WORKLOG.md) for the running log.**
 
-Last updated: 2026-08-24, end of Day 2. **We are one day ahead** — Days 1 and 2 both landed on 24 Aug, so Day 3 can start 25 Aug.
+Last updated: 2026-08-24, after reviewing and fixing commit `0fef929`. Days 3-5 are implemented; **the Day 3 gas gate and the Day 4 correctness gate are both still red.** See [WORKLOG.md](WORKLOG.md) for the full review.
 Repo: `TechnicallyKiller/postmark` (private) · Deadline: submit **Thu Sep 3**, demo day **Sep 11**.
 
 ---
@@ -45,10 +45,30 @@ Full pitch and parameter tables are in [README.md](README.md). Full ten-day plan
 
 | | Milestone | Gate | Where |
 |---|---|---|---|
-| **Day 1** | Scaffold, hook flags, address mining, dynamic-fee pool | a swap executes through the hook | [test/PostmarkHook.t.sol](test/PostmarkHook.t.sol) |
-| **Day 2** | Bonds and tiers | bonded vs unbonded pay measurably different fees | [test/FeeTiers.t.sol](test/FeeTiers.t.sol) |
+| **Day 1** | Scaffold, hook flags, address mining, dynamic-fee pool | a swap executes through the hook | ✅ [test/PostmarkHook.t.sol](test/PostmarkHook.t.sol) |
+| **Day 2** | Bonds and tiers | bonded vs unbonded pay measurably different fees | ✅ [test/FeeTiers.t.sol](test/FeeTiers.t.sol) |
+| **Day 3** | Receipts, ring buffer, price accumulator | overhead under 40k (hard stop 80k) | ❌ **191k measured** |
+| **Day 4** | Settlement math | charge ≈ known realized LVR | ⚠️ implemented, **gate not tested** |
+| **Day 5** | Rebates, EWMA, cross-pool registry | benign payer's fee declines over 20 swaps | ✅ |
+| **Day 6** | Bond invariant property test | locked bond ≥ chargeable amount | ✅ |
+| **Day 7** | Adversarial suite | A1–A5 all lose money for the attacker | ⚠️ A1 real, A2–A5 shallow |
+| **Day 8** | Backtest harness | Chart 1 shows the staircase | ⚠️ charts exist, unverified |
 
-**19 tests passing** — 10 vault, 5 hook, 4 fee-tier.
+**36 tests passing, 1 deliberately red** — the Day 3 gas gate, kept visible rather than buried.
+
+### The two gates that are actually blocking
+
+**Day 3 — gas.** Hook overhead is 191,395 against a 40k gate. This is structural, not tuning: a cold
+SSTORE is 22,100, and the current design writes two slots for the receipt plus two for the bond
+lock, on top of ~75k that every swap pays for the fee-quote reads and the price observation. 40k
+allows roughly *one* new storage slot per swap. Getting there means not storing a receipt per swap —
+emit it as an event and keep only a hash, or aggregate. That is an architecture call, so it is
+deliberately not made yet.
+
+**Day 4 — correctness.** The plan's gate is "a synthetic arbitrage trade is charged approximately
+its known realized LVR." The existing test asserts only `charge > 0`. Until a test pins the charge
+against an independently computed LVR, the central claim of the project is unverified. The plan says
+do not move past this one.
 
 ### Contracts as they stand
 

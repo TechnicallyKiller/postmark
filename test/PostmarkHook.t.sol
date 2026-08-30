@@ -11,12 +11,18 @@ import {Currency} from "v4-core/types/Currency.sol";
 import {PoolKey} from "v4-core/types/PoolKey.sol";
 import {PoolId} from "v4-core/types/PoolId.sol";
 import {IHooks} from "v4-core/interfaces/IHooks.sol";
+import {ReceiptBook} from "../src/libraries/ReceiptBook.sol";
+import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
 
 contract PostmarkHookTest is PostmarkTestBase {
     using StateLibrary for IPoolManager;
 
+    PoolKey internal vanillaComparisonKey;
+
     function setUp() public {
         setUpPostmark();
+        (vanillaComparisonKey,) = initPoolAndAddLiquidity(currency0, currency1, IHooks(address(0)), 3000, SQRT_PRICE_1_1);
+        MockERC20(Currency.unwrap(currency1)).approve(address(vault), type(uint256).max);
     }
 
     /// Day 1 gate: a swap executes through the hook.
@@ -73,31 +79,28 @@ contract PostmarkHookTest is PostmarkTestBase {
         return currency1.balanceOfSelf() - before;
     }
 
-    /// Day 3 gate: gas overhead per swap measured and written down. Target under 40k.
-    function test_afterSwapGasOverhead() public {
-        // Use a small notional just above DUST_THRESHOLD (10 * 10**6) to avoid crossing ticks
+    /// Day 3 gate: hook overhead per swap, measured against an identical vanilla pool.
+    ///
+    /// @dev This test is CURRENTLY RED, deliberately. The plan's gate is 40k with a hard stop at
+    /// 80k; measured overhead is ~190k. The previous version of this test measured *total* swap gas
+    /// against a 230k ceiling, which is not the gate and passed for the wrong reason before failing
+    /// for the wrong reason. See test/GasOverhead.t.sol for the breakdown, and WORKLOG.md for the
+    /// architecture options. Leaving it red keeps the open gate visible instead of buried.
+    function test_DAY3_GATE_hookOverheadUnder80k() public {
         uint256 notional = 1e8;
-        
-        // Setup bond to ensure receipt write triggers in afterSwap
-        uint256 required = hook.requiredBond(notional);
-        address currency1Addr = Currency.unwrap(currency1);
-        
-        deal(currency1Addr, address(this), required);
-        (bool success, ) = currency1Addr.call(
-            abi.encodeWithSignature("approve(address,uint256)", address(hook.vault()), required)
-        );
-        assertTrue(success, "approve failed");
+        bond(address(this), hook.requiredBond(notional) * 100);
 
-        hook.vault().deposit(currency1, required);
+        uint256 g0 = gasleft();
+        swap(vanillaComparisonKey, true, -int256(notional), ZERO_BYTES);
+        uint256 vanillaGas = g0 - gasleft();
 
-        uint256 gasBefore = gasleft();
-        swap(key, true, -int256(notional), ZERO_BYTES);
-        uint256 gasUsed = gasBefore - gasleft();
+        uint256 g1 = gasleft();
+        swap(key, true, -int256(notional), abi.encode(address(this)));
+        uint256 postmarkGas = g1 - gasleft();
 
-        // Typical vanilla v4 swap is ~100k-120k gas.
-        // With overhead, total swap gas should be well under 230k.
-        assertLt(gasUsed, 230_000, "Gas overhead exceeded bounds");
-        console.log("Total Swap Gas Used (including hook overhead):", gasUsed);
+        uint256 overhead = postmarkGas - vanillaGas;
+        console.log("hook overhead:", overhead);
+        assertLt(overhead, 80_000, "Day 3 gate: hook overhead above the plan's hard stop");
     }
 
     /// Day 4 gate: Settlement Math Correctness
@@ -181,15 +184,23 @@ contract PostmarkHookTest is PostmarkTestBase {
         console.logInt(score);
     }
 
-    /// Day 6 gate: Bond Invariant Property Fuzz
+    /// Day 6 gate: the bond invariant, as a property.
+    /// @dev `requiredBond(n) > maxCharge(n)` alone is just 2% > 1% on two constants and cannot
+    /// fail. The invariant that carries weight is that the bond LOCKED at swap time covers the
+    /// charge that settlement can actually debit — which is only true while both are derived from
+    /// the same recorded notional. That is exactly what the uint32 truncation broke.
     function test_day6_fuzz_BondInvariant(uint256 notional) public view {
-        // Limit to reasonable bounds for notional, must be above DUST_THRESHOLD
-        vm.assume(notional >= hook.DUST_THRESHOLD() && notional < type(uint128).max);
-        
-        uint256 bond = hook.requiredBond(notional);
-        uint256 maxCharge = hook.maxCharge(notional);
-        
-        assertGt(bond, maxCharge, "Bond invariant failed: bond must be strictly greater than max charge");
+        notional = bound(notional, hook.DUST_THRESHOLD() + 1, ReceiptBook.MAX_NOTIONAL);
+
+        // What afterSwap locks, keyed on the notional the receipt records.
+        uint96 recorded = uint96(notional);
+        assertEq(uint256(recorded), notional, "notional does not survive the receipt encoding");
+
+        uint256 locked = hook.requiredBond(notional);
+        uint256 releasable = hook.requiredBond(uint256(recorded));
+        assertEq(locked, releasable, "bond released at settlement differs from bond locked at swap");
+
+        assertGt(locked, hook.maxCharge(uint256(recorded)), "max charge exceeds the locked bond");
     }
 }
 

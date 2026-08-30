@@ -18,36 +18,54 @@ contract AdversarialTest is PostmarkTestBase {
         setUpPostmark();
     }
 
-    /// @notice A1: TWAP Manipulation - Attacker executes adverse swap, then pushes price back to fake benign markout.
+    /// @notice A1: TWAP manipulation. The attacker executes an adverse swap, then pushes the price
+    /// back before settlement so the receipt reads benign.
+    ///
+    /// @dev The defence is NOT "manipulation always gets charged" — pushing the price back really
+    /// does flip the markout sign. The defence is that doing so costs more than it saves, because
+    /// alpha < 1 and the attacker pays fees and price impact on the manipulating leg. So this is an
+    /// EV test across two worlds, not an assertion about the charge.
     function test_A1_TWAPManipulation_NegativeEV() public {
         uint256 notional = 1e15;
         address attacker = address(0xbad);
         fundTrader(attacker, 100 ether);
         bond(attacker, hook.requiredBond(notional) * 10);
-        
-        vm.startPrank(attacker);
-        
-        // 1. Initial adverse swap
-        swap(key, true, -int256(notional), abi.encode(attacker));
-        
-        // Wait W-1 blocks.
-        vm.roll(block.number + hook.W() - 1);
-        
-        // 2. Attacker manipulates price back up (smaller notional to avoid hitting limits)
-        swap(key, false, -int256(notional / 2), abi.encode(attacker));
-        
-        vm.roll(block.number + 1); // W blocks elapsed
-        
-        // 3. Settle first receipt
+
         uint256[] memory ids = new uint256[](1);
         ids[0] = 0;
-        
-        hook.settle(key, ids);
+        uint256 snap = vm.snapshotState();
+
+        // World A: settle honestly, eat whatever charge the markout implies.
+        vm.startPrank(attacker);
+        swap(key, true, -int256(notional), abi.encode(attacker));
         vm.stopPrank();
-        
-        // Assertion: We successfully simulated the TWAP manipulation sequence without reverts.
-        // EV math dictates cost > rebate.
-        assertTrue(true);
+        vm.roll(block.number + hook.W() + 1);
+        hook.settle(key, ids);
+        uint256 honestValue = _attackerValue(attacker);
+
+        vm.revertToState(snap);
+
+        // World B: manipulate the price back inside the window, then settle.
+        vm.startPrank(attacker);
+        swap(key, true, -int256(notional), abi.encode(attacker));
+        vm.roll(block.number + hook.W() - 1);
+        swap(key, false, -int256(notional / 2), abi.encode(attacker));
+        vm.stopPrank();
+        vm.roll(block.number + 2);
+        hook.settle(key, ids);
+        uint256 manipulatedValue = _attackerValue(attacker);
+
+        console.log("attacker value, settled honestly  :", honestValue);
+        console.log("attacker value, after manipulating:", manipulatedValue);
+
+        assertLt(manipulatedValue, honestValue, "TWAP manipulation was profitable");
+    }
+
+    /// @dev Attacker's total holdings: both tokens plus anything still in the vault. The pool sits
+    /// at ~1:1 so summing the legs is a fair proxy for value at these sizes.
+    function _attackerValue(address who) internal view returns (uint256) {
+        return MockERC20(Currency.unwrap(currency0)).balanceOf(who)
+            + MockERC20(Currency.unwrap(currency1)).balanceOf(who) + vault.balanceOf(who, bondCurrency);
     }
 
     /// @notice A2: Sybil Attack - Rotating fresh addresses defaults to top tier.

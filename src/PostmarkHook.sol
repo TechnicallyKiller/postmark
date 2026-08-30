@@ -73,7 +73,7 @@ contract PostmarkHook is BaseHook, IUnlockCallback {
     }
 
     mapping(PoolId => PoolConfig) public poolConfig;
-    mapping(PoolId => ReceiptBook.RingBuffer) public receipts;
+    mapping(PoolId => ReceiptBook.ReceiptLog) public receipts;
     mapping(PoolId => PriceAccumulator.ObservationHistory) public priceHistory;
 
     /// @notice Minimum notional required to write a receipt.
@@ -201,16 +201,33 @@ contract PostmarkHook is BaseHook, IUnlockCallback {
             tier = uint8((packed >> 161) & 0xFF);
         }
 
+        PoolId poolId = key.toId();
         uint256 notional = PostmarkMath.abs(int256(delta.amount1()));
-        (, int24 tick, , ) = poolManager.getSlot0(key.toId());
+        (, int24 tick,,) = poolManager.getSlot0(poolId);
 
-        if (notional > DUST_THRESHOLD && bondCovered) {
-            uint32 scaledNotional = uint32(notional / DUST_THRESHOLD);
-            ReceiptBook.write(receipts, key.toId(), payer, params.zeroForOne, tier, scaledNotional, tick);
-            vault.lock(payer, poolConfig[key.toId()].bondCurrency, requiredBond(notional));
+        // A receipt is only worth writing if it is above dust, backed by a bond, and small enough
+        // to record exactly. Oversized notionals are skipped rather than truncated: a receipt that
+        // misstates its own notional bills the wrong amount and releases the wrong bond.
+        if (notional > DUST_THRESHOLD && bondCovered && notional <= ReceiptBook.MAX_NOTIONAL) {
+            // Lock first. If the bond cannot actually be locked, no receipt is written, so there is
+            // never an open receipt without collateral behind it.
+            if (vault.lock(payer, poolConfig[poolId].bondCurrency, requiredBond(notional))) {
+                ReceiptBook.write(receipts, poolId, payer, params.zeroForOne, tier, uint96(notional), tick);
+            }
         }
 
-        PriceAccumulator.push(priceHistory, key.toId(), tick);
+        PriceAccumulator.push(priceHistory, poolId, tick);
+    }
+
+    /// @notice Read one receipt. The auto-generated getter cannot reach it because `ReceiptLog`
+    /// holds a mapping, and the scoreboard needs it as much as the tests do.
+    function getReceipt(PoolId poolId, uint256 id) external view returns (ReceiptBook.Receipt memory) {
+        return receipts[poolId].receipts[id];
+    }
+
+    /// @notice Number of receipts ever written for a pool. Ids run [0, count).
+    function receiptCount(PoolId poolId) external view returns (uint256) {
+        return receipts[poolId].nextId;
     }
 
     /// @notice Settle a batch of receipts. Calculates markout against TWAP and charges bond.
@@ -234,12 +251,15 @@ contract PostmarkHook is BaseHook, IUnlockCallback {
         address keeper
     ) private {
         PoolId poolId = key.toId();
-        ReceiptBook.RingBuffer storage buffer = receipts[poolId];
+        ReceiptBook.ReceiptLog storage buffer = receipts[poolId];
         ReceiptBook.Receipt memory receipt = buffer.receipts[id];
         require(receipt.payer != address(0), "Receipt empty or settled");
         require(block.number >= receipt.blockNumber + W, "TWAP window pending");
 
-        uint256 notional = uint256(receipt.notionalScaled) * DUST_THRESHOLD;
+        // The bond released below must be derived from the same value that was locked at swap time,
+        // or a residue stays locked forever and FlowVault.withdraw (which requires locked == 0)
+        // strands the payer's entire balance.
+        uint256 notional = receipt.notional;
         int256 markout;
         {
             int24 tickRef = PriceAccumulator.twapOver(priceHistory, poolId, receipt.blockNumber, receipt.blockNumber + W);
@@ -281,13 +301,13 @@ contract PostmarkHook is BaseHook, IUnlockCallback {
             }
         }
 
-        vault.unlock(receipt.payer, poolConfig[poolId].bondCurrency, requiredBond(uint256(receipt.notionalScaled) * DUST_THRESHOLD));
+        vault.unlock(receipt.payer, poolConfig[poolId].bondCurrency, requiredBond(notional));
         delete buffer.receipts[id];
     }
 
     function _distributeCharge(PoolKey memory key, ReceiptBook.Receipt memory receipt, int256 markout, address keeper) private {
         PoolId poolId = key.toId();
-        uint256 notional = uint256(receipt.notionalScaled) * DUST_THRESHOLD;
+        uint256 notional = receipt.notional;
         uint256 rawCharge = PostmarkMath.bpsOf(uint256(markout), ALPHA);
         uint256 cap = maxCharge(notional);
         uint256 charge = rawCharge > cap ? cap : rawCharge;

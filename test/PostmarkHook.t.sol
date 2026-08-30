@@ -98,8 +98,9 @@ contract PostmarkHookTest is PostmarkTestBase {
         vm.roll(101);
         swap(key, true, -int256(notional), abi.encode(address(this)));
         
-        // Block 105: Settle
-        vm.roll(105);
+        // Settle once the window has elapsed. Derived from W, not hardcoded, so the test follows
+        // the parameter instead of silently breaking when it changes.
+        vm.roll(100 + hook.W() + 1);
         uint256[] memory ids = new uint256[](1);
         ids[0] = 0; // The first receipt is at index 0
         

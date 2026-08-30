@@ -25,9 +25,9 @@ abstract contract PostmarkTestBase is Deployers {
     Currency internal bondCurrency;
     address internal guardian = makeAddr("guardian");
 
-    /// @dev Settlement window used across the suite, and the vault withdraw cooldown that must
-    /// cover it.
-    uint32 internal constant WINDOW_BLOCKS = 30;
+    /// @dev Vault withdraw cooldown used across the suite. Must exceed the hook's settlement
+    /// window W, or a payer could outrun their own settlement.
+    uint32 internal constant WINDOW_BLOCKS = 150;
 
     uint160 internal constant POSTMARK_FLAGS =
         uint160(Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG);

@@ -49,8 +49,17 @@ contract PostmarkHook is BaseHook, IUnlockCallback {
     /// @notice Hard cap on what one receipt can be charged, as bps of notional.
     uint256 public constant MAX_CHARGE_BPS = 100;
 
-    /// @notice Settlement TWAP window in blocks
-    uint40 public constant W = 5;
+    /// @notice Settlement TWAP window, in blocks.
+    /// @dev Measured, not guessed. Replaying 627 real USDC/WETH swaps, a 5-block window saw only
+    /// 3,823 USDC of the 17,947 USDC of adverse selection that actually materialised — 60 seconds
+    /// is simply too soon for the price to have told you who was informed. At W = 5 the pool
+    /// collected the equivalent of 14 bps against a 30 bps baseline, so LPs were strictly worse off
+    /// than a flat pool. At W = 100 (~20 minutes on mainnet) it collects 31 bps equivalent while
+    /// quoting benign flow ~4 bps, which is the whole point of the mechanism.
+    ///
+    /// The cost of a longer window is that a payer's bond stays locked for it, and
+    /// FlowVault.withdrawCooldownBlocks must exceed it.
+    uint40 public constant W = 100;
 
     /// @notice LVR recapture alpha (60% in bps)
     uint256 public constant ALPHA = 6000;

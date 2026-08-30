@@ -89,7 +89,7 @@ Hook permissions are `AFTER_INITIALIZE | BEFORE_SWAP | AFTER_SWAP`. The pool mus
 | `MIN_HISTORY` | 5 settled receipts | required before promotion past the entry tier |
 | `LAMBDA_BPS` | 9000 (λ = 0.9) | EWMA retention |
 | tier score bounds | 1 / 5 / 20 bps | EWMA realized markout, in bps of notional |
-| `W` | 5 blocks | settlement window. ~60s on mainnet, ~5s on Unichain — see limitations |
+| `W` | 100 blocks | settlement window, ~20 min on mainnet. Set from measured data, see below |
 | `alpha` | 0.6 | LVR recapture rate, must stay below 1 |
 | `keeperBps` | 5% of charge | |
 | `rebateShareBps` | 15% of charge | the rest, 80%, goes to LPs |
@@ -108,6 +108,36 @@ Hook permissions are `AFTER_INITIALIZE | BEFORE_SWAP | AFTER_SWAP`. The pool mus
 | **A5** | Hook rug risk | `FlowVault`'s hook is set once, forever. A one-way guardian brake stops new receipts and bond locks while never blocking a swap, a settlement, an LP withdrawal, or a bond withdrawal. LP removal is exercised with a receipt open. | ✅ |
 
 All five live in [test/Adversarial.t.sol](test/Adversarial.t.sol).
+
+## Measured on real flow
+
+627 real USDC/WETH swaps from mainnet, replayed through both pools ([scripts/backtest.py](scripts/backtest.py)).
+
+| | Postmark | Vanilla 30 bps |
+|---|---|---|
+| LP PnL | **3,478 USDC** | 2,616 USDC |
+| Fee paid by the most benign decile | **4.84 bps** | 30 bps |
+| Fee paid by the most toxic decile | **46.83 bps** | 30 bps |
+| Mean effective fee | 11.43 bps | 30 bps |
+
+That is the claim, on data: **LPs end ahead while benign flow pays roughly a sixth of what a flat
+pool charges it.** The toxic tail pays for it.
+
+**The settlement window is what makes or breaks this, and it was set from the data.** At W = 5
+blocks — 60 seconds — only 3,823 USDC of the 17,947 USDC of adverse selection had shown up yet, so
+the pool collected the equivalent of 14 bps against a 30 bps baseline and **LPs were strictly worse
+off than a flat pool**. Sixty seconds is simply too soon for the price to have told you who was
+informed. At W = 100 the mechanism collects 31 bps equivalent. The cost is that a payer's bond stays
+locked for the window.
+
+**Chart 1 is a hockey stick, not a monotone staircase.** Deciles 1–7 sit flat at 3–6 bps, then D8
+12, D9 23, D10 47. The benign deciles are flat because those swaps have near-zero markout, so their
+effective fee is just the tier fee their payer's reputation earned — it does not vary with a decile
+boundary. The honest description is a flat benign floor with a sharply rising toxic tail.
+
+Caveat worth stating before this goes on a slide: 627 swaps over 1.4 days from 27 distinct payers is
+a small sample, and the plan asks for bootstrap confidence intervals over days. Re-run over a longer
+window before the deck.
 
 ## Stated limitations
 
@@ -142,18 +172,22 @@ Read these before the mechanism convinces you.
 
 ### Gas
 
-Measured against an identical vanilla pool, under `forge test --isolate`.
+Measured against an identical vanilla pool under `forge test --isolate`, with **both pools warmed by
+the same 270 swaps** — comparing a traded pool against a fresh one measures tick and bitmap state as
+much as the hook.
 
-| | Overhead | Note |
-|---|---|---|
-| Steady state | **77,162** | what a live pool pays: observation ring wrapped, payer account exists |
-| Cold start | ~148,000 | a new pool's first swaps, every slot fresh |
+| | Overhead |
+|---|---|
+| Steady state | **~108,000** |
+| Split: quote + price observation, paid by every swap | ~46,000 |
+| Split: receipt + bond lock, paid when a receipt is written | ~47,000 |
 
-Breakdown of the steady-state figure: ~55k is paid by *every* swap (the fee-quote reads and the
-price observation) and ~22k more when a receipt is written. A cold `SSTORE` is 22,100, so the plan's
-40k target allows roughly one new storage slot per swap in total. Reaching it means emitting
-receipts as events and storing only a hash — an architecture change, not tuning. The 80k hard stop
-is met.
+**This misses the plan's 80k hard stop, so Day 3 is red.** A cold `SSTORE` is 22,100 and the receipt
+occupies two slots, so the reductions available are: emit the receipt as an event and keep only a
+hash (~22k), fold `ScoreRegistry` into `FlowVault` so the quote is one external call against one
+slot (~5–8k), and skip the observation when the tick has not moved (already done — lossless, since
+the TWAP extrapolates at the last tick, though it saves nothing on flow that moves the tick every
+swap). Together those land near 80k. Reaching 40k means not storing receipts on chain at all.
 
 ### Settlement correctness
 

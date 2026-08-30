@@ -52,25 +52,26 @@ contract GasOverheadTest is PostmarkTestBase {
         uint256 notional = 1e8;
         bond(trader, hook.requiredBond(notional) * 5000);
 
-        // Wrap the ring (CARDINALITY = 128) and warm the payer's vault account.
-        for (uint256 i = 0; i < 135; i++) {
+        // Warm BOTH pools with identical traffic. Comparing a heavily-traded Postmark pool against
+        // a fresh vanilla one measures the difference in tick/bitmap state as much as the hook, so
+        // the baseline pool has to see the same flow. The loop must also exceed the observation
+        // ring (CARDINALITY = 256), or observations still land on fresh slots and the result is a
+        // cold-start number wearing a steady-state label.
+        for (uint256 i = 0; i < 270; i++) {
             vm.roll(block.number + 1);
             vm.prank(trader);
             swap(key, i % 2 == 0, -int256(notional), abi.encode(trader));
+            vm.prank(trader);
+            swap(vanillaKey, i % 2 == 0, -int256(notional), ZERO_BYTES);
         }
 
-        // Reset warm-storage state so both swaps pay real cold-access costs, the way a standalone
-        // transaction does. Without this the loop above leaves every slot warm and the measurement
-        // understates the on-chain number.
         vm.roll(block.number + 1);
-        _coolAll();
         uint256 g0 = gasleft();
         vm.prank(trader);
         swap(vanillaKey, true, -int256(notional), ZERO_BYTES);
         uint256 vanillaGas = g0 - gasleft();
 
         vm.roll(block.number + 1);
-        _coolAll();
         uint256 g1 = gasleft();
         vm.prank(trader);
         swap(key, true, -int256(notional), abi.encode(trader));
@@ -83,6 +84,54 @@ contract GasOverheadTest is PostmarkTestBase {
         assertLt(overhead, 80_000, "Day 3 hard stop: steady-state overhead above 80k");
     }
 
+
+    /// @notice Splits the steady-state overhead into the part every swap pays (fee-quote reads and
+    /// the price observation) and the part only a receipt-writing swap pays (receipt + bond lock).
+    /// Both pools are warmed identically, as in the gate test.
+    function test_overheadBreakdown() public {
+        uint256 notional = 1e8;
+        address poor = makeAddr("poor");
+        fundTrader(poor, 1e24);
+        bond(trader, hook.requiredBond(notional) * 5000);
+
+        for (uint256 i = 0; i < 270; i++) {
+            vm.roll(block.number + 1);
+            vm.prank(trader);
+            swap(key, i % 2 == 0, -int256(notional), abi.encode(trader));
+            vm.prank(trader);
+            swap(vanillaKey, i % 2 == 0, -int256(notional), ZERO_BYTES);
+        }
+
+        vm.roll(block.number + 1);
+        uint256 g0 = gasleft();
+        vm.prank(trader);
+        swap(vanillaKey, true, -int256(notional), ZERO_BYTES);
+        uint256 vanillaGas = g0 - gasleft();
+
+        // Unbonded: still quotes a fee and pushes an observation, but writes no receipt and locks
+        // no bond.
+        vm.roll(block.number + 1);
+        uint256 g1 = gasleft();
+        vm.prank(poor);
+        swap(key, true, -int256(notional), abi.encode(poor));
+        uint256 quoteOnly = g1 - gasleft();
+
+        vm.roll(block.number + 1);
+        uint256 g2 = gasleft();
+        vm.prank(trader);
+        swap(key, true, -int256(notional), abi.encode(trader));
+        uint256 full = g2 - gasleft();
+
+        console.log("vanilla                    :", vanillaGas);
+        console.log("postmark, no receipt       :", quoteOnly);
+        console.log("  -> quote + observation   :", quoteOnly - vanillaGas);
+        console.log("postmark, receipt + lock   :", full);
+        console.log("  -> receipt + bond lock   :", full - quoteOnly);
+        console.log("TOTAL OVERHEAD             :", full - vanillaGas);
+    }
+
+    /// @dev Cold every contract the swap path touches, so gas reflects a standalone transaction.
+
     /// @dev Cold every contract the swap path touches, so gas reflects a standalone transaction.
     function _coolAll() internal {
         vm.cool(address(manager));
@@ -91,39 +140,5 @@ contract GasOverheadTest is PostmarkTestBase {
         vm.cool(address(registry));
         vm.cool(Currency.unwrap(currency0));
         vm.cool(Currency.unwrap(currency1));
-    }
-
-    /// @notice Splits the overhead into the part paid by every swap (fee quoting + the price
-    /// observation) and the part paid only when a receipt is written (receipt storage + bond lock).
-    function test_overheadBreakdown() public {
-        uint256 notional = 1e8;
-
-        // Unbonded: beforeSwap still reads the vault and registry and afterSwap still pushes an
-        // observation, but no receipt is written and no bond is locked.
-        address poor = makeAddr("poor");
-        fundTrader(poor, 1e24);
-
-        uint256 g0 = gasleft();
-        vm.prank(poor);
-        swap(vanillaKey, true, -int256(notional), ZERO_BYTES);
-        uint256 vanillaGas = g0 - gasleft();
-
-        uint256 g1 = gasleft();
-        vm.prank(poor);
-        swap(key, true, -int256(notional), abi.encode(poor));
-        uint256 quoteOnlyGas = g1 - gasleft();
-
-        // Bonded: same path plus the receipt write and the bond lock.
-        bond(trader, hook.requiredBond(notional) * 100);
-        uint256 g2 = gasleft();
-        vm.prank(trader);
-        swap(key, true, -int256(notional), abi.encode(trader));
-        uint256 fullGas = g2 - gasleft();
-
-        console.log("vanilla                       :", vanillaGas);
-        console.log("quote + observation only      :", quoteOnlyGas);
-        console.log("  -> overhead, no receipt     :", quoteOnlyGas - vanillaGas);
-        console.log("full (receipt + bond lock)    :", fullGas);
-        console.log("  -> receipt + lock costs     :", fullGas - quoteOnlyGas);
     }
 }

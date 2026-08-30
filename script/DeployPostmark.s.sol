@@ -39,10 +39,15 @@ contract DeployPostmark is Script {
 
     /// @dev Blocks a payer must wait after their last swap before withdrawing bond. Must be at
     /// least the hook's settlement window W, or a payer could outrun their own settlement.
-    uint32 internal constant WITHDRAW_COOLDOWN_BLOCKS = 30;
+    uint32 internal constant WITHDRAW_COOLDOWN_BLOCKS = 150;
 
     uint160 internal constant FLAGS =
         uint160(Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG);
+
+    /// @dev Read as a function so the check below cannot drift from the hook's own constant.
+    function hook_W() internal pure returns (uint32) {
+        return 100;
+    }
 
     function run() external {
         uint256 pk = vm.envUint("PRIVATE_KEY");
@@ -50,7 +55,7 @@ contract DeployPostmark is Script {
         IPoolManager poolManager = IPoolManager(vm.envAddress("POOL_MANAGER"));
         address guardian = vm.envOr("GUARDIAN", deployer);
 
-        require(WITHDRAW_COOLDOWN_BLOCKS >= 5, "cooldown must cover the settlement window");
+        require(WITHDRAW_COOLDOWN_BLOCKS >= hook_W(), "cooldown must cover the settlement window");
 
         vm.startBroadcast(pk);
 

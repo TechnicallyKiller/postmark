@@ -50,6 +50,12 @@ library PriceAccumulator {
         Observation memory prev = history.observations[(total - 1) % CARDINALITY];
         if (prev.blockNumber == uint40(block.number)) return;
 
+        // An observation at the same tick carries no information: `_cumulativeAt` extrapolates
+        // forward from the newest observation at its own tick, so the unchanged stretch is credited
+        // correctly whenever the next real move is written. Skipping saves a full cold SSTORE
+        // (~22.1k) on every swap that does not move the tick.
+        if (prev.tick == tick) return;
+
         // The elapsed interval was spent at `prev.tick`, not at the tick we are now recording.
         int256 elapsed = int256(uint256(uint40(block.number) - prev.blockNumber));
         int192 cumulative = prev.cumulativeTick + int192(int256(prev.tick) * elapsed);

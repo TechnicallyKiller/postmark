@@ -21,6 +21,7 @@ Fetched events are cached to swaps_cache.csv, so re-runs and chart tweaks cost n
 """
 
 import os
+import re
 import sys
 import time
 import warnings
@@ -34,7 +35,7 @@ from tqdm import tqdm
 warnings.filterwarnings("ignore")
 
 # --- CONTRACT PARAMETERS -- these must track src/PostmarkHook.sol ------------------------------
-W = 5                       # settlement window, blocks
+W = 100                     # settlement window, blocks (~20 min on mainnet)
 ALPHA_BPS = 6000            # LVR recapture rate, 0.6
 MAX_CHARGE_BPS = 100        # hard cap per receipt, 1% of notional
 TIER_FEE_BPS = [2, 8, 15, 30]   # pips/100: 200, 800, 1500, 3000 pips
@@ -53,6 +54,8 @@ BASELINE_FEE_BPS = 30.0
 RPC_URL = os.getenv("ETH_RPC_URL", "")
 POOL_ADDRESS = "0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8"  # mainnet USDC/WETH 0.3%
 LOOKBACK_BLOCKS = int(os.getenv("LOOKBACK_BLOCKS", "10000"))
+# Providers cap the eth_getLogs block range and the caps differ wildly by plan - Alchemy's free
+# tier allows 10 blocks, paid tiers allow thousands. Start optimistic and shrink on refusal.
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "500"))
 CACHE_FILE = "swaps_cache.csv"
 BLOCKS_PER_DAY = 7200
@@ -95,31 +98,65 @@ def parse_log(log):
     }
 
 
+RANGE_HINT = re.compile(r"up to a (\d+) block range")
+
+
+def _range_limit_from(err):
+    """Providers refuse oversized eth_getLogs ranges with wildly different wording. Pull the
+    allowed range out of the message when they state it, otherwise just signal 'too big'."""
+    text = str(err).lower()
+    if "block range" not in text and "range is too large" not in text and "query returned more than" not in text:
+        return None
+    m = RANGE_HINT.search(text)
+    return int(m.group(1)) if m else 0
+
+
 def fetch_events(start_block, end_block):
+    """Fetch Swap logs, adapting the batch size down to whatever the provider actually allows."""
+    batch = BATCH_SIZE
     rows, failures = [], 0
-    print(f"Fetching Swap events, blocks {start_block}..{end_block} (batch {BATCH_SIZE})")
-    for lo in tqdm(range(start_block, end_block + 1, BATCH_SIZE)):
-        hi = min(lo + BATCH_SIZE - 1, end_block)
-        for attempt in range(3):
-            try:
-                logs = rpc("eth_getLogs", [{
-                    "address": POOL_ADDRESS,
-                    "fromBlock": hex(lo),
-                    "toBlock": hex(hi),
-                    "topics": [SWAP_TOPIC],
-                }])
-                rows.extend(parse_log(l) for l in logs)
-                break
-            except Exception as exc:
-                if attempt == 2:
-                    failures += 1
-                    if failures <= 3:
-                        print(f"\n  chunk {lo}-{hi} failed: {exc}")
-                else:
-                    time.sleep(1.5)
+    lo = start_block
+    total = end_block - start_block + 1
+
+    bar = tqdm(total=total, unit="blk", desc="Fetching swaps")
+    while lo <= end_block:
+        hi = min(lo + batch - 1, end_block)
+        try:
+            logs = rpc("eth_getLogs", [{
+                "address": POOL_ADDRESS,
+                "fromBlock": hex(lo),
+                "toBlock": hex(hi),
+                "topics": [SWAP_TOPIC],
+            }])
+        except Exception as exc:
+            limit = _range_limit_from(exc)
+            if limit is not None and batch > 1:
+                # Shrink and retry the SAME range - do not advance, or we would silently skip blocks.
+                new_batch = max(1, limit if limit else batch // 4)
+                if new_batch < batch:
+                    tqdm.write(f"  provider caps the range at {new_batch} blocks; adjusting batch {batch} -> {new_batch}")
+                    batch = new_batch
+                    continue
+            if "429" in str(exc) or "rate" in str(exc).lower():
+                time.sleep(2.0)
+                continue
+            failures += 1
+            if failures <= 3:
+                tqdm.write(f"  chunk {lo}-{hi} failed: {exc}")
+            elif failures == 4:
+                tqdm.write("  (further chunk failures suppressed)")
+            bar.update(hi - lo + 1)
+            lo = hi + 1
+            continue
+
+        rows.extend(parse_log(l) for l in logs)
+        bar.update(hi - lo + 1)
+        bar.set_postfix(swaps=len(rows), batch=batch)
+        lo = hi + 1
+    bar.close()
 
     if failures:
-        print(f"\n{failures} chunk(s) failed.")
+        print(f"{failures} chunk(s) failed and were skipped.")
     return rows, failures
 
 

@@ -1,272 +1,336 @@
+"""
+Postmark backtest harness.
+
+Replays real Uniswap v3 USDC/WETH mainnet flow through both a vanilla 30 bps pool and a simulated
+Postmark pool, and produces the two charts:
+
+  Chart 1  effective fee by flow-toxicity decile, against the flat 30 bps line
+  Chart 2  cumulative LP PnL, Postmark vs vanilla, with bootstrap confidence bands over days
+
+The simulation mirrors the contract's constants and reputation rules exactly (see the CONTRACT
+PARAMETERS block). Every swap's payer is the `sender` on the Swap event, which is the same
+attribution the hook uses in v1 - the router, not the end user - so the tiers here evolve the way
+they would on chain rather than under an idealised per-trader assumption.
+
+Requires an ARCHIVE RPC. Public endpoints serve only head-adjacent blocks and will fail.
+    export ETH_RPC_URL="https://eth-mainnet.g.alchemy.com/v2/<key>"
+    python3 scripts/backtest.py
+
+Fetched events are cached to swaps_cache.csv, so re-runs and chart tweaks cost no RPC calls.
+    python3 scripts/backtest.py --cached
+"""
+
 import os
 import sys
+import time
+import warnings
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import seaborn as sns
-from web3 import Web3
-from tqdm import tqdm
-import time
-import warnings
 import requests
-from hexbytes import HexBytes
+from tqdm import tqdm
 
-# Suppress pandas deprecation warnings
-warnings.filterwarnings('ignore')
+warnings.filterwarnings("ignore")
 
-# --- Constants & Configuration ---
-RPC_URL = os.getenv('ETH_RPC_URL', 'https://eth.llamarpc.com')
-POOL_ADDRESS = '0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8'  # Mainnet USDC/WETH 0.3%
-W = 12
-ALPHA = 0.6
+# --- CONTRACT PARAMETERS -- these must track src/PostmarkHook.sol ------------------------------
+W = 5                       # settlement window, blocks
+ALPHA_BPS = 6000            # LVR recapture rate, 0.6
+MAX_CHARGE_BPS = 100        # hard cap per receipt, 1% of notional
+TIER_FEE_BPS = [2, 8, 15, 30]   # pips/100: 200, 800, 1500, 3000 pips
+BONDED_ENTRY_TIER = 2
+DEFAULT_TIER = 3
+MIN_HISTORY = 5
+LAMBDA_BPS = 9000           # EWMA retention, 0.9
+TIER0_MAX, TIER1_MAX, TIER2_MAX = 1.0, 5.0, 20.0   # score bounds, bps of markout
+KEEPER_BPS = 500
+REBATE_SHARE_BPS = 1500
+LP_SHARE = 1 - (KEEPER_BPS + REBATE_SHARE_BPS) / 10_000   # 0.80
+
 BASELINE_FEE_BPS = 30.0
-BATCH_SIZE = 500  # Safe batch size for Alchemy free tier
 
-# Uniswap V3 Pool Swap Event ABI
-SWAP_ABI = [{
-    "anonymous": False,
-    "inputs": [
-        {"indexed": True, "internalType": "address", "name": "sender", "type": "address"},
-        {"indexed": True, "internalType": "address", "name": "recipient", "type": "address"},
-        {"indexed": False, "internalType": "int256", "name": "amount0", "type": "int256"},
-        {"indexed": False, "internalType": "int256", "name": "amount1", "type": "int256"},
-        {"indexed": False, "internalType": "uint160", "name": "sqrtPriceX96", "type": "uint160"},
-        {"indexed": False, "internalType": "uint128", "name": "liquidity", "type": "uint128"},
-        {"indexed": False, "internalType": "int24", "name": "tick", "type": "int24"}
-    ],
-    "name": "Swap",
-    "type": "event"
-}]
+# --- CONFIG -------------------------------------------------------------------------------------
+RPC_URL = os.getenv("ETH_RPC_URL", "")
+POOL_ADDRESS = "0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8"  # mainnet USDC/WETH 0.3%
+LOOKBACK_BLOCKS = int(os.getenv("LOOKBACK_BLOCKS", "10000"))
+BATCH_SIZE = int(os.getenv("BATCH_SIZE", "500"))
+CACHE_FILE = "swaps_cache.csv"
+BLOCKS_PER_DAY = 7200
 
-def fetch_events(w3, contract, start_block, end_block, chunk_size=BATCH_SIZE):
-    events = []
-    # Uniswap V3 Swap event signature
-    swap_topic = "0x"+ w3.keccak(text="Swap(address,address,int256,int256,uint160,uint128,int24)").hex()
-    
-    print(f"Fetching Swap events from block {start_block} to {end_block} (batch size {chunk_size})...")
-    
-    for chunk_start in tqdm(range(start_block, end_block + 1, chunk_size)):
-        chunk_end = min(chunk_start + chunk_size - 1, end_block)
-        retries = 3
-        
-        while retries > 0:
+SWAP_TOPIC = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67"
+
+
+def rpc(method, params):
+    resp = requests.post(
+        RPC_URL.strip(),
+        json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
+        headers={"Content-Type": "application/json"},
+        timeout=30,
+    )
+    body = resp.json()
+    if "error" in body:
+        raise RuntimeError(f"{resp.status_code} {body['error']}")
+    return body["result"]
+
+
+def _twos(hexword):
+    """32-byte hex word -> signed int."""
+    v = int(hexword, 16)
+    return v - (1 << 256) if v >= (1 << 255) else v
+
+
+def parse_log(log):
+    data = log["data"][2:]
+    words = [data[i:i + 64] for i in range(0, len(data), 64)]
+    return {
+        "blockNumber": int(log["blockNumber"], 16),
+        "logIndex": int(log["logIndex"], 16),
+        # topics[1] is the sender - the router or contract that called swap. This is exactly what
+        # PostmarkHook resolves as the payer when no hookData attestation is supplied.
+        "sender": "0x" + log["topics"][1][-40:],
+        "amount0": _twos(words[0]),
+        "amount1": _twos(words[1]),
+        "sqrtPriceX96": int(words[2], 16),
+        "tick": _twos(words[4]) if len(words) > 4 else 0,
+    }
+
+
+def fetch_events(start_block, end_block):
+    rows, failures = [], 0
+    print(f"Fetching Swap events, blocks {start_block}..{end_block} (batch {BATCH_SIZE})")
+    for lo in tqdm(range(start_block, end_block + 1, BATCH_SIZE)):
+        hi = min(lo + BATCH_SIZE - 1, end_block)
+        for attempt in range(3):
             try:
-                # Raw RPC Call: Bypasses web3.py HTTPProvider exceptions and formatting bugs
-                payload = {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "eth_getLogs",
-                    "params": [{
-                        "address": contract.address,
-                        "fromBlock": hex(chunk_start),
-                        "toBlock": hex(chunk_end),
-                        "topics": [swap_topic]
-                    }]
-                }
-                
-                resp = requests.post(RPC_URL.strip(), json=payload, headers={"Content-Type": "application/json"})
-                
-                # If Alchemy throws a 400, this lets us actually read their error message!
-                if resp.status_code != 200:
-                    raise Exception(f"HTTP {resp.status_code} - {resp.text}")
-                    
-                data = resp.json()
-                if "error" in data:
-                    raise Exception(f"RPC Error - {data['error']}")
-                
-                raw_logs = data.get("result", [])
-                
-                for log in raw_logs:
-                    # Reconstruct the log dict so web3.py can parse the ABI correctly
-                    formatted_log = {
-                        'address': log['address'],
-                        'blockHash': HexBytes(log['blockHash']),
-                        'blockNumber': int(log['blockNumber'], 16),
-                        'data': log['data'],
-                        'logIndex': int(log['logIndex'], 16),
-                        'topics': [HexBytes(t) for t in log['topics']],
-                        'transactionHash': HexBytes(log['transactionHash']),
-                        'transactionIndex': int(log['transactionIndex'], 16),
-                    }
-                    parsed = contract.events.Swap().process_log(formatted_log)
-                    events.append(parsed)
-                    
+                logs = rpc("eth_getLogs", [{
+                    "address": POOL_ADDRESS,
+                    "fromBlock": hex(lo),
+                    "toBlock": hex(hi),
+                    "topics": [SWAP_TOPIC],
+                }])
+                rows.extend(parse_log(l) for l in logs)
                 break
-                
-            except Exception as e:
-                retries -= 1
-                if retries == 0:
-                    print(f"\nFailed chunk {chunk_start}-{chunk_end}: {e}")
+            except Exception as exc:
+                if attempt == 2:
+                    failures += 1
+                    if failures <= 3:
+                        print(f"\n  chunk {lo}-{hi} failed: {exc}")
                 else:
                     time.sleep(1.5)
-                    
-    return events
+
+    if failures:
+        print(f"\n{failures} chunk(s) failed.")
+    return rows, failures
+
+
+def tier_of(score, settled, bonded=True):
+    """Mirrors ScoreRegistry.tierOf."""
+    if not bonded:
+        return DEFAULT_TIER
+    if settled < MIN_HISTORY:
+        return BONDED_ENTRY_TIER
+    if score <= TIER0_MAX:
+        return 0
+    if score <= TIER1_MAX:
+        return 1
+    if score <= TIER2_MAX:
+        return BONDED_ENTRY_TIER
+    return DEFAULT_TIER
+
+
+def simulate(df, start_block, end_block):
+    """Replay the flow through Postmark's fee quoting, settlement and reputation update."""
+    # Per-block price series, forward filled across blocks with no swaps.
+    blocks = pd.DataFrame({"blockNumber": np.arange(start_block, end_block + 1)})
+    last_price = df.drop_duplicates("blockNumber", keep="last")[["blockNumber", "price"]]
+    series = pd.merge(blocks, last_price, on="blockNumber", how="left")
+    series["price"] = series["price"].ffill().bfill()
+    series.set_index("blockNumber", inplace=True)
+
+    lam = LAMBDA_BPS / 10_000
+    scores, settled = {}, {}
+    upfront_bps, charges, markouts, tiers = [], [], [], []
+
+    for _, row in tqdm(df.iterrows(), total=len(df), desc="Replaying swaps"):
+        payer = row["sender"]
+        score = scores.get(payer, 0.0)
+        count = settled.get(payer, 0)
+
+        # 1. beforeSwap: quote from the payer's reputation as it stands right now.
+        tier = tier_of(score, count)
+        fee_bps = TIER_FEE_BPS[tier]
+
+        # 2. settle: markout against the W-block TWAP of the pool's own price path.
+        b = int(row["blockNumber"])
+        window_end = min(b + W, end_block)
+        p_ref = series.loc[b:window_end, "price"].mean()
+        ratio = p_ref / row["price"]
+        # zeroForOne sells token0: a higher reference price means they sold too cheap, so benign.
+        diff = (1 - ratio) if row["zeroForOne"] else (ratio - 1)
+        markout = diff * row["notional"]
+
+        charge = max(0.0, markout) * (ALPHA_BPS / 10_000)
+        charge = min(charge, row["notional"] * MAX_CHARGE_BPS / 10_000)
+
+        # 3. ScoreRegistry.update with the normalised markout, in bps of notional.
+        sample_bps = (markout / row["notional"]) * 10_000
+        scores[payer] = lam * score + (1 - lam) * sample_bps
+        settled[payer] = count + 1
+
+        upfront_bps.append(fee_bps)
+        charges.append(charge)
+        markouts.append(markout)
+        tiers.append(tier)
+
+    df = df.copy()
+    df["tier"] = tiers
+    df["upfront_fee_bps"] = upfront_bps
+    df["upfront_fee"] = df["notional"] * df["upfront_fee_bps"] / 10_000
+    df["markout"] = markouts
+    df["markout_bps"] = (df["markout"] / df["notional"]) * 10_000
+    df["pm_charge"] = charges
+
+    # What the payer actually paid, all in: the fee quoted up front plus the ex-post charge. The
+    # upfront leg is not optional - leaving it out would show benign flow paying 0 bps instead of 2.
+    df["pm_effective_fee_bps"] = ((df["upfront_fee"] + df["pm_charge"]) / df["notional"]) * 10_000
+    df["vanilla_fee"] = (BASELINE_FEE_BPS / 10_000) * df["notional"]
+
+    # LPs keep the whole upfront fee plus their share of the charge, and eat the markout either way.
+    df["pm_pnl"] = df["upfront_fee"] + LP_SHARE * df["pm_charge"] - df["markout"]
+    df["vanilla_pnl"] = df["vanilla_fee"] - df["markout"]
+    return df
+
+
+def chart_effective_fee(df):
+    df["decile"] = pd.qcut(df["markout_bps"], 10, labels=False, duplicates="drop")
+    summary = df.groupby("decile")["pm_effective_fee_bps"].mean()
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    x = np.arange(len(summary))
+    ax.bar(x, summary.values, color="#8b5cf6", alpha=0.9, label="Postmark, all-in effective fee")
+    ax.axhline(BASELINE_FEE_BPS, color="#ef4444", linestyle="--", linewidth=2.5,
+               label=f"Vanilla pool ({BASELINE_FEE_BPS:.0f} bps)")
+    ax.set_title("Effective fee by flow toxicity decile (live mainnet USDC/WETH)", fontsize=14, pad=15)
+    ax.set_xlabel("Flow toxicity decile (0 = most benign, 9 = most toxic)", fontsize=12)
+    ax.set_ylabel("Effective fee (bps)", fontsize=12)
+    ax.set_xticks(x, [f"D{i + 1}" for i in x])
+    ax.legend(loc="upper left", fontsize=11)
+    ax.grid(axis="y", alpha=0.3)
+    fig.tight_layout()
+    fig.savefig("chart_effective_fee.png", dpi=200, bbox_inches="tight")
+    print("  -> chart_effective_fee.png")
+    return summary
+
+
+def chart_lp_pnl(df, n_boot=1000):
+    # Bootstrap over DAYS, not over individual swaps: swaps within a day are not independent, and
+    # resampling them individually would understate the true confidence interval.
+    df = df.copy()
+    df["day"] = (df["blockNumber"] - df["blockNumber"].min()) // BLOCKS_PER_DAY
+    days = df["day"].unique()
+
+    if len(days) < 2:
+        print("  ! only one day of data; confidence bands would be meaningless. Skipping Chart 2.")
+        print("    Increase LOOKBACK_BLOCKS (7200 blocks ~ 1 day) for a real interval.")
+        return None
+
+    by_day = {d: g for d, g in df.groupby("day")}
+    n_days = len(days)
+    v_totals, p_totals = [], []
+    for _ in tqdm(range(n_boot), desc="Bootstrapping over days"):
+        picked = np.random.choice(days, size=n_days, replace=True)
+        v_totals.append(np.concatenate([by_day[d]["vanilla_pnl"].values for d in picked]).cumsum())
+        p_totals.append(np.concatenate([by_day[d]["pm_pnl"].values for d in picked]).cumsum())
+
+    n = min(min(len(p) for p in v_totals), min(len(p) for p in p_totals))
+    v = np.array([p[:n] for p in v_totals])
+    p = np.array([q[:n] for q in p_totals])
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    x = np.arange(n)
+    ax.plot(x, p.mean(0), color="#10b981", linewidth=2.5, label="Postmark LP (mean)")
+    ax.fill_between(x, np.percentile(p, 2.5, axis=0), np.percentile(p, 97.5, axis=0),
+                    color="#10b981", alpha=0.2, label="Postmark 95% CI")
+    ax.plot(x, v.mean(0), color="#ef4444", linewidth=2.5, label="Vanilla 30 bps LP (mean)")
+    ax.fill_between(x, np.percentile(v, 2.5, axis=0), np.percentile(v, 97.5, axis=0),
+                    color="#ef4444", alpha=0.2, label="Vanilla 95% CI")
+    ax.set_title(f"Cumulative LP PnL, Postmark vs vanilla ({n_boot}x bootstrap over {n_days} days)",
+                 fontsize=14, pad=15)
+    ax.set_xlabel("Swap sequence", fontsize=12)
+    ax.set_ylabel("Cumulative LP PnL (USDC)", fontsize=12)
+    ax.legend(loc="upper left", fontsize=11)
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig("chart_lp_pnl.png", dpi=200, bbox_inches="tight")
+    print("  -> chart_lp_pnl.png")
+    return p.mean(0)[-1], v.mean(0)[-1]
+
 
 def main():
-    w3 = Web3(Web3.HTTPProvider(RPC_URL))
-    if not w3.is_connected():
-        print(f"CRITICAL: Failed to connect to RPC: {RPC_URL}")
-        print("Please ensure ETH_RPC_URL is set correctly in your environment.")
-        sys.exit(1)
-        
-    print(f"Connected to RPC. Current head block: {w3.eth.block_number}")
-    contract = w3.eth.contract(address=w3.to_checksum_address(POOL_ADDRESS), abi=SWAP_ABI)
-    
-    end_block = w3.eth.block_number
-    start_block = end_block - 10000
-    
-    raw_events = fetch_events(w3, contract, start_block, end_block)
-    if not raw_events:
-        print("No events fetched. Check block range or network connection.")
-        return
-        
-    print(f"\nFetched {len(raw_events)} live swaps.")
-    
-    # --- Parse Events into DataFrame ---
-    print("Parsing swap data...")
-    data = []
-    for ev in raw_events:
-        args = ev['args']
-        data.append({
-            'blockNumber': ev['blockNumber'],
-            'transactionHash': ev['transactionHash'].hex(),
-            'logIndex': ev['logIndex'],
-            'amount0': args['amount0'],
-            'amount1': args['amount1'],
-            'sqrtPriceX96': args['sqrtPriceX96'],
-            'tick': args['tick']
-        })
-        
-    df = pd.DataFrame(data)
-    df.sort_values(['blockNumber', 'logIndex'], inplace=True)
+    use_cache = "--cached" in sys.argv
+
+    if use_cache:
+        if not os.path.exists(CACHE_FILE):
+            sys.exit(f"No cache at {CACHE_FILE}. Run once without --cached first.")
+        df = pd.read_csv(CACHE_FILE)
+        start_block, end_block = int(df["blockNumber"].min()), int(df["blockNumber"].max())
+        print(f"Loaded {len(df)} cached swaps, blocks {start_block}..{end_block}")
+    else:
+        if not RPC_URL:
+            sys.exit(
+                "ETH_RPC_URL is not set.\n\n"
+                "This backtest needs an ARCHIVE node - it reads logs thousands of blocks back, and\n"
+                "public endpoints serve only head-adjacent blocks. A free Alchemy or Infura key is\n"
+                "enough:\n\n"
+                '    export ETH_RPC_URL="https://eth-mainnet.g.alchemy.com/v2/<key>"\n'
+            )
+        head = int(rpc("eth_blockNumber", []), 16)
+        end_block, start_block = head, head - LOOKBACK_BLOCKS
+        print(f"Connected. Head block {head}.")
+
+        rows, failures = fetch_events(start_block, end_block)
+        if not rows:
+            sys.exit(
+                "\nNo events fetched.\n"
+                "Every chunk failed. The usual cause is a non-archive endpoint: reading logs more\n"
+                "than a few blocks back requires an archive RPC. Set ETH_RPC_URL to an Alchemy or\n"
+                "Infura URL and retry."
+            )
+        df = pd.DataFrame(rows)
+        df.to_csv(CACHE_FILE, index=False)
+        print(f"\nFetched {len(df)} swaps -> cached to {CACHE_FILE}")
+
+    df.sort_values(["blockNumber", "logIndex"], inplace=True)
     df.reset_index(drop=True, inplace=True)
-    
-    # Price = (sqrtPriceX96 / 2^96)^2
-    df['price'] = (df['sqrtPriceX96'].astype(float) / (2**96)) ** 2
-    df['P_exec'] = df['price']
-    
-    # Trade Direction: zeroForOne (USDC -> WETH) if amount0 > 0
-    df['zeroForOne'] = df['amount0'] > 0
-    df['notional'] = df['amount0'].abs() / 1e6  # Normalize USDC decimals (6)
-    
-    # Drop zero-notional dust transactions
-    df = df[df['notional'] > 0.1].copy()
-    
-    # --- Build Block-by-Block Price History ---
-    print("Constructing W-block TWAP history...")
-    all_blocks = pd.DataFrame({'blockNumber': np.arange(start_block, end_block + 1)})
-    price_hist = df.drop_duplicates('blockNumber', keep='last')[['blockNumber', 'price']]
-    price_hist = pd.merge(all_blocks, price_hist, on='blockNumber', how='left')
-    price_hist['price'] = price_hist['price'].ffill().bfill()
-    price_hist.set_index('blockNumber', inplace=True)
-    
-    # --- Simulate Postmark Settlement Math ---
-    print("Simulating Postmark Settlement LVR Recapture...")
-    markouts = []
-    charges = []
-    
-    for _, row in df.iterrows():
-        b = row['blockNumber']
-        p_exec = row['P_exec']
-        zfo = row['zeroForOne']
-        
-        # P_ref: TWAP over [B, B+W]
-        window_end = min(b + W, end_block)
-        if b > end_block - W:
-            window_end = end_block
-            
-        twap_price = price_hist.loc[b:window_end, 'price'].mean()
-        p_ref = twap_price
-        
-        # Markout = Notional * (P_ref - P_exec) / P_exec
-        ratio = p_ref / p_exec
-        diff = (1 - ratio) if zfo else (ratio - 1)
-            
-        m = diff * row['notional']
-        markouts.append(m)
-        
-        # LVR Recapture Charge
-        charge = m * ALPHA if m > 0 else 0
-        
-        # Cap: 5000 bps (50%) of notional
-        if charge > 0.5 * row['notional']:
-            charge = 0.5 * row['notional']
-            
-        charges.append(charge)
-        
-    df['markout'] = markouts
-    df['vanilla_fee'] = (BASELINE_FEE_BPS / 10000) * df['notional']
-    df['pm_charge'] = charges
-    
-    # Effective Fee in BPS
-    df['pm_effective_fee_bps'] = (df['pm_charge'] / df['notional']) * 10000
-    df['markout_bps'] = (df['markout'] / df['notional']) * 10000
-    
-    # --- Chart 1: Effective Fee by Flow Decile ---
-    print("Generating Chart 1: Effective Fee by Flow Decile...")
-    df['decile'] = pd.qcut(df['markout_bps'], 10, labels=False, duplicates='drop')
-    decile_summary = df.groupby('decile')['pm_effective_fee_bps'].mean()
-    
-    plt.figure(figsize=(10, 6))
-    sns.set_style("whitegrid")
-    
-    x = np.arange(len(decile_summary))
-    plt.bar(x, decile_summary.values, color='#8b5cf6', alpha=0.9, label='Postmark Ex-Post Fee')
-    plt.axhline(BASELINE_FEE_BPS, color='#ef4444', linestyle='--', linewidth=2.5, label='Vanilla Pool (30 bps)')
-    
-    plt.title('Effective Fee by Flow Toxicity Decile (Live Mainnet Data)', fontsize=14, pad=15)
-    plt.xlabel('Flow Toxicity Decile (0 = Most Benign, 9 = Most Toxic)', fontsize=12)
-    plt.ylabel('Effective Fee (bps)', fontsize=12)
-    plt.xticks(x, [f"D{i+1}" for i in x])
-    plt.legend(loc='upper left', fontsize=11)
-    plt.tight_layout()
-    plt.savefig('chart_effective_fee.png', dpi=300, bbox_inches='tight')
-    print("  -> Saved 'chart_effective_fee.png'")
-    
-    # --- Chart 2: LP PnL vs Rebalancing Benchmark (Bootstrap) ---
-    print("Generating Chart 2: LP PnL (Bootstrap Resampling)...")
-    df['vanilla_pnl'] = df['vanilla_fee'] - df['markout']
-    df['pm_pnl'] = (df['pm_charge'] * 0.8) - df['markout']
-    
-    N_BOOTSTRAP = 1000
-    n_swaps = len(df)
-    
-    vanilla_paths = np.zeros((N_BOOTSTRAP, n_swaps))
-    pm_paths = np.zeros((N_BOOTSTRAP, n_swaps))
-    
-    for i in tqdm(range(N_BOOTSTRAP), desc="Bootstrapping PnL Paths"):
-        sample_idx = np.random.choice(df.index, size=n_swaps, replace=True)
-        v_pnl = df.loc[sample_idx, 'vanilla_pnl'].values
-        p_pnl = df.loc[sample_idx, 'pm_pnl'].values
-        
-        vanilla_paths[i] = np.cumsum(v_pnl)
-        pm_paths[i] = np.cumsum(p_pnl)
-        
-    v_mean = np.mean(vanilla_paths, axis=0)
-    v_lb = np.percentile(vanilla_paths, 2.5, axis=0)
-    v_ub = np.percentile(vanilla_paths, 97.5, axis=0)
-    
-    p_mean = np.mean(pm_paths, axis=0)
-    p_lb = np.percentile(pm_paths, 2.5, axis=0)
-    p_ub = np.percentile(pm_paths, 97.5, axis=0)
-    
-    plt.figure(figsize=(10, 6))
-    x_axis = np.arange(n_swaps)
-    plt.plot(x_axis, p_mean, color='#10b981', label='Postmark LP (Mean)', linewidth=2.5)
-    plt.fill_between(x_axis, p_lb, p_ub, color='#10b981', alpha=0.2, label='Postmark 95% CI')
-    
-    plt.plot(x_axis, v_mean, color='#ef4444', label='Vanilla 30 bps LP (Mean)', linewidth=2.5)
-    plt.fill_between(x_axis, v_lb, v_ub, color='#ef4444', alpha=0.2, label='Vanilla 95% CI')
-    
-    plt.title('Cumulative LP PnL: Postmark vs Vanilla (1,000x Bootstrap)', fontsize=14, pad=15)
-    plt.xlabel('Swap Sequence', fontsize=12)
-    plt.ylabel('Cumulative LP PnL (USDC Normalized)', fontsize=12)
-    plt.legend(loc='upper left', fontsize=11)
-    plt.tight_layout()
-    plt.savefig('chart_lp_pnl.png', dpi=300, bbox_inches='tight')
-    print("  -> Saved 'chart_lp_pnl.png'")
-    
-    print("\nBacktest Harness Execution Complete.")
+
+    df["price"] = (df["sqrtPriceX96"].astype(float) / (2 ** 96)) ** 2
+    df["zeroForOne"] = df["amount0"] > 0
+    df["notional"] = df["amount0"].abs() / 1e6      # USDC, 6 decimals
+    df = df[df["notional"] > 0.1].copy()
+    if df.empty:
+        sys.exit("Every swap was below the dust filter.")
+
+    start_block, end_block = int(df["blockNumber"].min()), int(df["blockNumber"].max())
+    df = simulate(df, start_block, end_block)
+
+    print("\nChart 1: effective fee by flow decile")
+    summary = chart_effective_fee(df)
+    print("\nChart 2: LP PnL vs vanilla")
+    pnl = chart_lp_pnl(df)
+
+    print("\n--- Results " + "-" * 55)
+    print(f"swaps replayed        : {len(df):,}")
+    print(f"blocks                : {start_block}..{end_block} ({(end_block-start_block)/BLOCKS_PER_DAY:.1f} days)")
+    print(f"distinct payers       : {df['sender'].nunique():,}")
+    print(f"mean effective fee    : {df['pm_effective_fee_bps'].mean():.2f} bps (vanilla {BASELINE_FEE_BPS:.0f})")
+    print(f"most benign decile    : {summary.iloc[0]:.2f} bps")
+    print(f"most toxic decile     : {summary.iloc[-1]:.2f} bps")
+    print(f"staircase is monotone : {bool((summary.diff().dropna() >= -1e-9).all())}")
+    if pnl:
+        print(f"final LP PnL, Postmark: {pnl[0]:,.2f} USDC")
+        print(f"final LP PnL, vanilla : {pnl[1]:,.2f} USDC")
+    print("-" * 67)
+
 
 if __name__ == "__main__":
     main()

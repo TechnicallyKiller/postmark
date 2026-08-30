@@ -4,3 +4,5 @@ broadcast/
 .env
 node_modules/
 *.log
+swaps_cache.csv
+chart_*.png

@@ -301,8 +301,19 @@ docs/
 
 ## Deployed addresses
 
-Not yet deployed to a public network. The deploy script is verified end to end against a local
-chain: the hook lands on an address whose low 14 bits are exactly `0x10c0`, the vault and registry
-are wired, and the dynamic-fee pool initialises with `currency1` as the bond currency.
+**Unichain Sepolia** (chain id 1301), verified live on chain.
 
-Unichain Sepolia addresses go here once broadcast.
+| Contract | Address |
+|---|---|
+| PostmarkHook | [`0xdB86D5Fd78174d6ACE2EB268DB12F29C335A10C0`](https://unichain-sepolia.blockscout.com/address/0xdB86D5Fd78174d6ACE2EB268DB12F29C335A10C0) |
+| FlowVault | [`0x0F1bf92EE0C79F7Ca5C1e30E9412aD5BFF45c7C8`](https://unichain-sepolia.blockscout.com/address/0x0F1bf92EE0C79F7Ca5C1e30E9412aD5BFF45c7C8) |
+| ScoreRegistry | [`0x9872b13257E958c2F7E4DcCc3F96b3C70c8e050c`](https://unichain-sepolia.blockscout.com/address/0x9872b13257E958c2F7E4DcCc3F96b3C70c8e050c) |
+| v4 PoolManager | `0x00B036B58a818B1BC34d502D3fE730Db729e62AC` |
+
+The hook address ends in **`10c0`** — that is not decoration. A v4 hook declares its permissions in
+the low 14 bits of its own address, and `0x10c0` is `AFTER_INITIALIZE | BEFORE_SWAP | AFTER_SWAP`.
+The address was mined to carry them, and the constructor rejects any address that does not.
+
+Confirmed on chain: `vault.hook()` and `registry.isAuthorizedHook()` both point at the hook,
+`W = 100`, withdraw cooldown 150 blocks, tier fees 200/800/1500/3000 pips, emergency brake not
+engaged. Whole deploy cost 0.0000023 ETH.

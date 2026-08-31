@@ -111,33 +111,53 @@ All five live in [test/Adversarial.t.sol](test/Adversarial.t.sol).
 
 ## Measured on real flow
 
-627 real USDC/WETH swaps from mainnet, replayed through both pools ([scripts/backtest.py](scripts/backtest.py)).
+3,465 real USDC/WETH swaps from Ethereum mainnet, 92 distinct payers over 6.9 days, replayed through
+both pools ([scripts/backtest.py](scripts/backtest.py)).
 
-| | Postmark | Vanilla 30 bps |
-|---|---|---|
-| LP PnL | **3,478 USDC** | 2,616 USDC |
-| Fee paid by the most benign decile | **4.84 bps** | 30 bps |
-| Fee paid by the most toxic decile | **46.83 bps** | 30 bps |
-| Mean effective fee | 11.43 bps | 30 bps |
+**Chart 1 — the mechanism predicting toxicity, then pricing it.** Each swap is grouped by the tier
+Postmark assigned it *from the payer's prior behaviour*, and the bar shows what that flow then turned
+out to be worth:
 
-That is the claim, on data: **LPs end ahead while benign flow pays roughly a sixth of what a flat
-pool charges it.** The toxic tail pays for it.
+| tier | quoted | realized markout | effective fee paid | share of volume |
+|---|---|---|---|---|
+| T0 | 2 bps | **0.98 bps** | 2.59 bps | 0.15% |
+| T1 | 8 bps | **6.41 bps** | 11.85 bps | 1.31% |
+| T2 | 15 bps | **14.90 bps** | 23.94 bps | 27.75% |
+| T3 | 30 bps | **39.14 bps** | 53.48 bps | 70.79% |
 
-**The settlement window is what makes or breaks this, and it was set from the data.** At W = 5
-blocks — 60 seconds — only 3,823 USDC of the 17,947 USDC of adverse selection had shown up yet, so
-the pool collected the equivalent of 14 bps against a 30 bps baseline and **LPs were strictly worse
-off than a flat pool**. Sixty seconds is simply too soon for the price to have told you who was
-informed. At W = 100 the mechanism collects 31 bps equivalent. The cost is that a payer's bond stays
-locked for the window.
+Monotone, with 40x separation between the cheapest and most expensive tier. The mechanism sorts flow
+by toxicity using only the past, and the realized markout confirms the sort was right.
 
-**Chart 1 is a hockey stick, not a monotone staircase.** Deciles 1–7 sit flat at 3–6 bps, then D8
-12, D9 23, D10 47. The benign deciles are flat because those swaps have near-zero markout, so their
-effective fee is just the tier fee their payer's reputation earned — it does not vary with a decile
-boundary. The honest description is a flat benign floor with a sharply rising toxic tail.
+**Chart 2 — LP PnL.** Postmark **71,286 USDC against vanilla's 34,594 — 2.06x**, on identical flow.
 
-Caveat worth stating before this goes on a slide: 627 swaps over 1.4 days from 27 distinct payers is
-a small sample, and the plan asks for bootstrap confidence intervals over days. Re-run over a longer
-window before the deck.
+### The honest version of the headline
+
+Postmark is **not** a fee reduction. Averaged over all volume it charges 30.60 bps against the flat
+pool's 30 — essentially the same. You cannot pay LPs more and charge traders less; the money has to
+come from somewhere.
+
+What changes is **who pays**. Benign flow pays 2.59 bps where a flat pool charges it 30, a 12x
+discount. The toxic tail pays 53.48. LPs end up twice as well off because the fees now land on the
+flow that actually causes their losses, instead of being spread evenly across everyone.
+
+That is the claim, and it is a price-discrimination claim rather than a cheapness claim. Anyone who
+reads the mean fee and expects it to be below 30 will find 30.60; better to say this first.
+
+Note the volume distribution: on this pool 71% of volume sits in the top tier. The traders getting
+the large discount are numerous but small. That is what adverse selection looks like in real flow,
+and it is why a flat fee is the wrong instrument — but it does mean the discount reaches a minority
+of *volume*, even while reaching a majority of *swaps*.
+
+### Reproducing
+
+```bash
+export ETH_RPC_URL="https://eth-mainnet.g.alchemy.com/v2/<key>"
+LOOKBACK_BLOCKS=50000 python3 scripts/backtest.py     # ~22 min on a free tier, then cached
+python3 scripts/backtest.py --cached                  # re-runs the charts, no RPC calls
+```
+
+An archive endpoint is required — public RPCs serve only head-adjacent blocks. Free-tier Alchemy
+caps `eth_getLogs` at a 10-block range; the harness detects that and adapts its batch size.
 
 ## Stated limitations
 

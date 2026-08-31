@@ -17,7 +17,11 @@ import sys
 import urllib.request
 
 rpc = os.getenv("RPC") or os.getenv("UNICHAIN_SEPOLIA_RPC") or "https://sepolia.unichain.org"
-from_block = os.getenv("FROM_BLOCK", "earliest")
+# Public endpoints refuse an unbounded eth_getLogs range - Unichain Sepolia answers 403 - so the
+# scan is bounded and chunked. SetupPool's swaps are the most recent thing on the chain, so walking
+# back from head finds them quickly.
+LOOKBACK = int(os.getenv("LOOKBACK_BLOCKS", "20000"))
+CHUNK = int(os.getenv("CHUNK", "500"))
 
 # keccak256("SwapGas(bytes32,uint256,bool,uint256)")
 TOPIC = "0x" + "".rjust(0, "0")
@@ -27,7 +31,9 @@ def rpc_call(method, params):
     req = urllib.request.Request(
         rpc,
         data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode(),
-        headers={"Content-Type": "application/json"},
+        # Several public endpoints reject urllib's default User-Agent with a bare 403, which
+        # looks exactly like a rate limit or a range refusal. Send a normal one.
+        headers={"Content-Type": "application/json", "User-Agent": "postmark-gas/1.0"},
     )
     with urllib.request.urlopen(req, timeout=45) as r:
         body = json.load(r)
@@ -49,9 +55,44 @@ def keccak_topic():
 
 
 topic = keccak_topic()
-logs = rpc_call("eth_getLogs", [{"fromBlock": from_block, "toBlock": "latest", "topics": [topic]}])
+
+
+def scan(topic):
+    """Walk back from head in chunks until the probe's events turn up."""
+    head = int(rpc_call("eth_blockNumber", []), 16)
+    floor = max(0, head - LOOKBACK)
+    found, chunk, hi = [], CHUNK, head
+    while hi > floor:
+        lo = max(floor, hi - chunk + 1)
+        try:
+            found.extend(rpc_call("eth_getLogs", [{
+                "fromBlock": hex(lo), "toBlock": hex(hi), "topics": [topic],
+            }]))
+        except Exception as exc:
+            msg = str(exc).lower()
+            if ("range" in msg or "403" in msg or "limit" in msg) and chunk > 10:
+                chunk = max(10, chunk // 5)
+                print(f"  provider narrowed the range; chunk -> {chunk}")
+                continue
+            raise
+        # The probe emits every SwapGas in one burst, so once found, one more chunk is plenty.
+        if found and lo <= min(int(l["blockNumber"], 16) for l in found) - 1:
+            break
+        hi = lo - 1
+    return found
+
+
+try:
+    logs = scan(topic)
+except Exception as exc:
+    sys.exit(f"Log scan failed: {exc}\n\nTry a smaller CHUNK, e.g. CHUNK=50 python3 scripts/swap_gas.py")
+
 if not logs:
-    sys.exit("No SwapGas events found. Run SetupPool against this chain first.")
+    sys.exit(
+        f"No SwapGas events in the last {LOOKBACK} blocks.\n"
+        "Run SetupPool against this chain first, or raise LOOKBACK_BLOCKS."
+    )
+logs.sort(key=lambda l: (int(l["blockNumber"], 16), int(l["logIndex"], 16)))
 
 rows = []
 for l in logs:

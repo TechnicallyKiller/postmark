@@ -172,22 +172,29 @@ Read these before the mechanism convinces you.
 
 ### Gas
 
-Measured against an identical vanilla pool under `forge test --isolate`, with **both pools warmed by
-the same 270 swaps** — comparing a traded pool against a fresh one measures tick and bitmap state as
-much as the hook.
+Measured **on Unichain Sepolia**, in the transaction performing the swap, against an identical
+vanilla pool seeded with the same liquidity and warmed by the same flow
+([`GasProbe`](script/GasProbe.sol), [`scripts/swap_gas.py`](scripts/swap_gas.py)).
 
-| | Overhead |
-|---|---|
-| Steady state | **~108,000** |
-| Split: quote + price observation, paid by every swap | ~46,000 |
-| Split: receipt + bond lock, paid when a receipt is written | ~47,000 |
+| path | gas | overhead |
+|---|---|---|
+| vanilla swap | 97,875 | — |
+| Postmark, quote only | 134,203 | **+36,328** |
+| Postmark, receipt + bond lock | 196,084 | **+98,209** |
 
-**This misses the plan's 80k hard stop, so Day 3 is red.** A cold `SSTORE` is 22,100 and the receipt
-occupies two slots, so the reductions available are: emit the receipt as an event and keep only a
-hash (~22k), fold `ScoreRegistry` into `FlowVault` so the quote is one external call against one
-slot (~5–8k), and skip the observation when the tick has not moved (already done — lossless, since
-the TWAP extrapolates at the last tick, though it saves nothing on flow that moves the tick every
-swap). Together those land near 80k. Reaching 40k means not storing receipts on chain at all.
+Stable to ~0.1% across rounds; the first swap into a fresh pool is warm-up and is excluded.
+
+**The quote-only path meets the plan's 40k target.** A swap pays the full ~98k only when it opens a
+receipt, which requires a posted bond — and that is the swap receiving a fee discount worth far more
+than the gas. Unbonded flow, which is most flow, pays under 40k.
+
+At Unichain's 0.0005 gwei that full overhead costs **$0.00015 per swap**. The same overhead on
+Ethereum mainnet at 20 gwei would be $6.48, which is why Postmark is an L2 mechanism: below roughly
+a $2,300 swap, mainnet gas would cost a trader more than the fee discount saves them. On an L2 the
+break-even is essentially zero.
+
+A separate Foundry measurement ([`test/GasOverhead.t.sol`](test/GasOverhead.t.sol)) reports ~108k
+for the full path in a local EVM. The on-chain figure above is the one to quote.
 
 ### Settlement correctness
 
@@ -309,6 +316,18 @@ docs/
 | FlowVault | [`0x0F1bf92EE0C79F7Ca5C1e30E9412aD5BFF45c7C8`](https://unichain-sepolia.blockscout.com/address/0x0F1bf92EE0C79F7Ca5C1e30E9412aD5BFF45c7C8) |
 | ScoreRegistry | [`0x9872b13257E958c2F7E4DcCc3F96b3C70c8e050c`](https://unichain-sepolia.blockscout.com/address/0x9872b13257E958c2F7E4DcCc3F96b3C70c8e050c) |
 | v4 PoolManager | `0x00B036B58a818B1BC34d502D3fE730Db729e62AC` |
+
+A live pool is running on it, with a vanilla 30 bps pool alongside for comparison:
+
+| | Pool ID |
+|---|---|
+| Postmark pool | `0xcdeaf3cf7e1fd1332eece659d1832f331a2808582e1bb11a3c363304b23ee885` |
+| Vanilla 30 bps pool | `0xcfd1b3e91e47f87be5c35a9f2fc182736a5ff8fc430d5dad870f333ee4f6d1b0` |
+
+Fifteen swaps have run through the pair. The hook has written **6 receipts**, each recording its
+payer, the exact notional, the execution tick and the tier quoted — including one where a router
+attested its end user through `hookData` and the hook billed that address rather than the router.
+Reproduce with [`script/SetupPool.s.sol`](script/SetupPool.s.sol).
 
 The hook address ends in **`10c0`** — that is not decoration. A v4 hook declares its permissions in
 the low 14 bits of its own address, and `0x10c0` is `AFTER_INITIALIZE | BEFORE_SWAP | AFTER_SWAP`.

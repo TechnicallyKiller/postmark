@@ -48,7 +48,7 @@ sequenceDiagram
     H->>H: write receipt + price observation
     Note over H: ...W blocks pass...
     K->>H: settle(receiptIds)
-    H->>H: markout vs TWAP over W
+    H->>H: markout vs worst price printed in W
     alt markout positive — LPs adversely selected
         H->>V: debit bond → LPs, keeper, rebate pool
     else markout zero or negative — benign
@@ -68,11 +68,11 @@ sequenceDiagram
 
 | Contract | Role | Status |
 |---|---|---|
-| [`PostmarkHook.sol`](src/PostmarkHook.sol) | v4 hook: `afterInitialize`, `beforeSwap`, `afterSwap` | fee quoting live; receipts and settlement pending |
-| [`FlowVault.sol`](src/FlowVault.sol) | Bond escrow: deposit, withdraw, lock, debit, credit | live |
+| [`PostmarkHook.sol`](src/PostmarkHook.sol) | v4 hook: `afterInitialize`, `beforeSwap`, `afterSwap`, permissionless `settle`, one-way emergency brake | live |
+| [`FlowVault.sol`](src/FlowVault.sol) | Bond escrow. Balance, lock and cooldown share one storage slot per (payer, currency) | live |
 | [`ScoreRegistry.sol`](src/ScoreRegistry.sol) | Per-payer EWMA markout score, shared across all Postmark pools | live |
-| `ReceiptBook.sol` | Packed open receipts per pool, ring buffer | not yet built |
-| `PriceAccumulator.sol` | Cumulative tick observations for the settlement TWAP | not yet built |
+| [`ReceiptBook.sol`](src/libraries/ReceiptBook.sol) | Append-only receipts per pool, notional stored exactly in `uint96` | live |
+| [`PriceAccumulator.sol`](src/libraries/PriceAccumulator.sol) | Tick observations in a 128-slot ring; supplies the settlement reference price | live |
 
 Hook permissions are `AFTER_INITIALIZE | BEFORE_SWAP | AFTER_SWAP`. The pool must be created with `LPFeeLibrary.DYNAMIC_FEE_FLAG`, and the hook address is mined with `HookMiner`.
 
@@ -90,6 +90,7 @@ Hook permissions are `AFTER_INITIALIZE | BEFORE_SWAP | AFTER_SWAP`. The pool mus
 | `LAMBDA_BPS` | 9000 (λ = 0.9) | EWMA retention |
 | tier score bounds | 1 / 5 / 20 bps | EWMA realized markout, in bps of notional |
 | `W` | 100 blocks | settlement window, ~20 min on mainnet. Set from measured data, see below |
+| reference price | window extremum | the most adverse tick that printed, not the mean — see A1 |
 | `alpha` | 0.6 | LVR recapture rate, must stay below 1 |
 | `keeperBps` | 5% of charge | |
 | `rebateShareBps` | 15% of charge | the rest, 80%, goes to LPs |
@@ -101,7 +102,7 @@ Hook permissions are `AFTER_INITIALIZE | BEFORE_SWAP | AFTER_SWAP`. The pool mus
 
 | | Attack | Defence | Test |
 |---|---|---|---|
-| **A1** | TWAP manipulation — push the price back before settlement to fake a benign markout | Pushing the price back genuinely does flip the markout sign; the defence is that it costs more than it saves. Tested as a two-world EV comparison — settle honestly vs manipulate and settle. **The attacker ends poorer.** | ✅ |
+| **A1** | TWAP manipulation — trade back inside your own settlement window so the receipt reads benign | Settlement prices against the **most adverse tick that printed** in the window, not its average. A price that has printed cannot be un-printed. Tested across three worlds — honest, manipulate, and a control making the identical trades with the reversing trade moved *after* the window — so the manipulation is isolated from that trade's own P&L. **All three now settle to the same charge.** | ✅ |
 | **A2** | Sybil — a fresh address per swap | Reputation only ever lowers cost, and a fresh address cannot buy below the entry tier at any bond size. Over identical flow, rotating addresses paid **1.8e13 in fees against 8.9e12 — 2.02x** — for one address that settles its receipts. | ✅ |
 | **A3** | Wash trading for rebates | The washer puts the entire proceeds straight back, so the token1 leg closes out exactly. Round trip **cost 3.0e12 of token0 and earned zero rebates**; a rebate is capped at half the fee that generated it. | ✅ |
 | **A4** | Receipt spam — dust swaps to bloat state | 20 dust swaps wrote **zero receipts and locked zero bond**, having burned 3.9M gas. | ✅ |
@@ -185,10 +186,27 @@ Read these before the mechanism convinces you.
 | 6 | Bond invariant property test | locked bond ≥ chargeable amount | ✅ |
 | 7 | Adversarial suite | A1–A5 all lose money for the attacker | ✅ |
 | 8 | Backtest harness | Chart 1 shows the staircase | ⚠️ harness verified, **charts need an archive RPC** |
-| 9 | Deploy + scoreboard | a judge could open the URL and swap | ⚠️ deploy verified locally, no frontend |
+| 9 | Deploy + scoreboard | a judge could open the URL and swap | ⚠️ **live on Unichain Sepolia**, quotable by routers; no frontend yet |
 | 10 | Freeze and docs | — | ⬜ |
 
-**46 Solidity tests + 22 backtest-math checks, all green.**
+**46 Solidity tests (45 green, 1 deliberately red) + 23 backtest-math checks.**
+
+The red one is the local-EVM gas gate, superseded by the on-chain measurement below. It is left
+failing rather than relaxed, so the open question stays visible.
+
+### Test coverage
+
+`forge coverage`, source contracts only:
+
+| | lines | statements | branches |
+|---|---|---|---|
+| PostmarkHook.sol | **100%** | 99.4% | 80.0% |
+| FlowVault.sol | 97.4% | 90.4% | 50.0% |
+| ScoreRegistry.sol | 89.3% | 77.4% | 42.9% |
+| **Total** | **90.4%** | 90.8% | 61.9% |
+
+`base/BaseHook.sol` sits at 26% and is excluded from that judgement — it is abstract stubs that
+revert by design, not logic anyone should be exercising.
 
 ### Gas
 
@@ -224,10 +242,10 @@ reference price analytically rather than reading it back out of the contract und
 ```
 tick at execution   : 19
 tick after market   : 99
-expected TWAP tick  : 83        →  a 64-tick adverse move
+reference tick      : 99        →  an 80-tick adverse move
 notional            : 1e18
-gross markout       : 64.2 bps  =  1.0001^64 − 1
-charge              : 38.5 bps  =  α × 64.2, α = 0.6
+gross markout       : 80.3 bps  =  1.0001^80 − 1
+charge              : 48.2 bps  =  α × 80.3, α = 0.6
 ```
 
 Expected and actual matched to the wei.
@@ -348,6 +366,24 @@ Fifteen swaps have run through the pair. The hook has written **6 receipts**, ea
 payer, the exact notional, the execution tick and the tier quoted — including one where a router
 attested its end user through `hookData` and the hook billed that address rather than the router.
 Reproduce with [`script/SetupPool.s.sol`](script/SetupPool.s.sol).
+
+### Routers can quote it
+
+Verified against the live pool with the canonical `V4Quoter` at `0x56dcd40a…`:
+
+```
+Postmark pool, no attestation   → 974,507,951,428,743 out    99,306 gas
+Postmark pool, hookData attests → 975,972,665,198,715 out   161,440 gas
+vanilla 30 bps pool             → 986,155,426,021,753 out    37,163 gas
+```
+
+The hook quotes cleanly through the standard quoter, and the attested quote returns **more output**
+than the unattested one — the quoter is picking up the named payer's tier discount. That matters
+more than it looks: a hook that cannot be quoted cannot be routed to, and a fee that only resolves
+at execution time would be invisible to an aggregator. Postmark's fee is fully visible in the quote.
+
+Note the quote's own gas is higher on the attested path, because resolving an attested payer reads
+their bond and reputation. That is quoting cost, not swap cost — the swap figures are above.
 
 The hook address ends in **`10c0`** — that is not decoration. A v4 hook declares its permissions in
 the low 14 bits of its own address, and `0x10c0` is `AFTER_INITIALIZE | BEFORE_SWAP | AFTER_SWAP`.

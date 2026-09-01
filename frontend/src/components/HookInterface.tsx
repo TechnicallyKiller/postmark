@@ -44,7 +44,7 @@ export default function HookInterface() {
   const open = useMemo(() => state?.receipts.filter((r) => !r.settled) ?? [], [state])
 
   return (
-    <main className="min-h-screen flex flex-col bg-neutral-950 text-white overflow-hidden">
+    <main className="min-h-screen flex flex-col bg-neutral-950 text-white">
       <nav className="relative z-10 border-b border-neutral-800 px-4 py-4 md:px-6 md:py-5 lg:px-10">
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-4">
           <a href="#top" className="flex items-center gap-3" aria-label="Postmark home">
@@ -86,7 +86,7 @@ export default function HookInterface() {
 
         <AnimatePresence mode="wait">
           {activeTab === 'Flow' && (
-            <motion.div key="Flow" variants={tabVariants} initial="initial" animate="animate" exit="exit" className="relative z-0">
+            <motion.div key="Flow" variants={tabVariants} initial="initial" animate="animate" exit="exit" className="relative z-0 -mx-4 md:-mx-6 lg:-mx-10">
               <FlowDiagram state={state} />
             </motion.div>
           )}

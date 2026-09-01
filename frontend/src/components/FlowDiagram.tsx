@@ -1,14 +1,15 @@
 'use client'
 
+import { useEffect, useRef, useState } from 'react'
 import { ADDRESSES, amount, bps, type PoolState, type Receipt } from '@/lib/postmark'
 
 /**
  * Postmark Flow — a port of the `Postmark Flow.dc.html` design canvas.
  *
- * The layout is fixed at the design's 2000px canvas and scrolls horizontally rather than reflowing:
- * a five-node pipeline that wraps stops being a pipeline. Values the live chain can supply (tier
- * fees, the settlement window, the receipt, the head block) are read rather than hardcoded, so the
- * diagram and the Ledger tab can never disagree.
+ * The layout keeps the design's fixed 2000px canvas and scales it to the available width rather
+ * than reflowing: a five-node pipeline that wraps stops being a pipeline. Values the live chain can
+ * supply (tier fees, the settlement window, the receipt, the head block) are read rather than
+ * hardcoded, so the diagram and the Ledger tab can never disagree.
  */
 
 const MONO = "var(--font-ibm-plex-mono), 'IBM Plex Mono', ui-monospace, monospace"
@@ -23,14 +24,41 @@ const TIER_ROWS = [
 
 const TIER_SWATCH = ['#CCFF00', '#9BE600', '#FFA23A', '#FF4D4D']
 
+const CANVAS_WIDTH = 2000
+
 export default function FlowDiagram({ state }: { state: PoolState | null }) {
   const fees = state?.tierFees ?? [200, 800, 1500, 3000]
   const windowBlocks = state?.windowBlocks ?? 100
   const receipt: Receipt | undefined = state?.receipts.find((r) => !r.settled)
 
+  // The design is a fixed 2000px canvas. Rather than reflow it - a five-node pipeline that wraps
+  // stops being a pipeline - scale it down to whatever width is available, so the whole flow is
+  // visible at once with nothing to scroll during a demo. Below 0.62 the 10px labels stop being
+  // readable, so past that point it stays put and scrolls instead.
+  const outer = useRef<HTMLDivElement>(null)
+  const inner = useRef<HTMLDivElement>(null)
+  const [scale, setScale] = useState(1)
+  const [height, setHeight] = useState<number | undefined>(undefined)
+
+  useEffect(() => {
+    const el = outer.current
+    if (!el) return
+    const measure = () => {
+      const s = Math.min(1, Math.max(0.62, el.clientWidth / CANVAS_WIDTH))
+      setScale(s)
+      if (inner.current) setHeight(inner.current.offsetHeight * s)
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    if (inner.current) ro.observe(inner.current)
+    return () => ro.disconnect()
+  }, [state])
+
   return (
-    <div className="overflow-x-auto">
-      <div style={{ width: 2000, background: '#0a0a0a', color: '#e5e5e5', padding: '56px 64px 64px', fontFamily: SANS, boxSizing: 'border-box', textWrap: 'pretty' }}>
+    <div ref={outer} className="w-full overflow-x-auto" style={{ height }}>
+      <div ref={inner} style={{ transform: `scale(${scale})`, transformOrigin: 'top left', width: CANVAS_WIDTH }}>
+      <div style={{ width: CANVAS_WIDTH, background: '#0a0a0a', color: '#e5e5e5', padding: '56px 64px 64px', fontFamily: SANS, boxSizing: 'border-box', textWrap: 'pretty' }}>
 
         {/* masthead */}
         <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', borderBottom: '1px solid #262626', paddingBottom: 20, marginBottom: 44 }}>
@@ -224,6 +252,7 @@ export default function FlowDiagram({ state }: { state: PoolState | null }) {
             </Callout>
           </div>
         </div>
+      </div>
       </div>
     </div>
   )

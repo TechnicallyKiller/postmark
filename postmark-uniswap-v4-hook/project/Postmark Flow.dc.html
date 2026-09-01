@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="" />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  body { margin: 0; background: #0a0a0a; }
+  a { color: #CCFF00; text-decoration: none; }
+  a:hover { color: #ffffff; }
+</style>
+</helmet>
+<div style="width: 2000px; background: #0a0a0a; color: #e5e5e5; padding: 56px 64px 64px; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; box-sizing: border-box; text-wrap: pretty;">
+
+  <div style="display: flex; align-items: flex-end; justify-content: space-between; border-bottom: 1px solid #262626; padding-bottom: 20px; margin-bottom: 44px;">
+    <div style="display: flex; align-items: baseline; gap: 22px;">
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 34px; font-weight: 600; letter-spacing: 0.14em; color: #ffffff;">POSTMARK</div>
+      <div style="font-size: 17px; color: #a3a3a3; max-width: 640px; line-height: 1.4;">A Uniswap v4 hook that charges a low fee up front and bills the adverse selection afterwards — to the counterparty who caused it.</div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 14px;">
+      <div style="display: flex; flex-direction: column; gap: 6px; align-items: flex-end;">
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.22em; color: #737373;">HOOK</div>
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #d4d4d4;">0xdB86D5Fd78174d6ACE2EB268DB12F29C335A10C0</div>
+      </div>
+      <div style="border: 1px solid #CCFF00; color: #CCFF00; font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.16em; padding: 8px 12px;">LIVE · UNICHAIN SEPOLIA</div>
+    </div>
+  </div>
+
+  <div style="position: relative; width: 1872px; height: 730px;">
+
+    <div style="position: absolute; top: 0; left: 0; display: flex; align-items: flex-start; gap: 0;">
+
+      <div style="width: 240px; height: 420px; box-sizing: border-box; border: 1px solid #262626; background: #0d0d0d; padding: 20px; display: flex; flex-direction: column;">
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.22em; color: #737373; margin-bottom: 18px;">NODE 01 · INGRESS</div>
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 20px; font-weight: 600; color: #ffffff; letter-spacing: 0.04em; line-height: 1.25;">SWAP<br />ARRIVES</div>
+        <div style="font-size: 14px; color: #a3a3a3; line-height: 1.5; margin-top: 16px;">A trader swaps. They may or may not have posted a bond.</div>
+        <div style="margin-top: auto; display: flex; flex-direction: column; gap: 8px;">
+          <div style="border: 1px solid #262626; padding: 9px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.1em; color: #d4d4d4; display: flex; justify-content: space-between;"><span>BONDED</span><span style="color: #CCFF00;">TIER 0–2</span></div>
+          <div style="border: 1px solid #262626; padding: 9px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.1em; color: #d4d4d4; display: flex; justify-content: space-between;"><span>UNBONDED</span><span style="color: #FF4D4D;">TIER 3</span></div>
+        </div>
+      </div>
+
+      <div style="width: 52px; height: 420px; display: flex; align-items: center;">
+        <div style="flex: 1; height: 1px; background: #CCFF00; opacity: 0.55;"></div>
+        <div style="width: 0; height: 0; border-left: 8px solid #CCFF00; border-top: 5px solid transparent; border-bottom: 5px solid transparent;"></div>
+      </div>
+
+      <div style="width: 330px; height: 420px; box-sizing: border-box; border: 1px solid #262626; background: #0d0d0d; padding: 20px; display: flex; flex-direction: column;">
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.22em; color: #737373; margin-bottom: 18px;">NODE 02 · HOOK CALLBACK</div>
+        <div style="display: flex; align-items: baseline; gap: 10px;">
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 20px; font-weight: 600; color: #CCFF00;">beforeSwap</div>
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; letter-spacing: 0.18em; color: #ffffff;">QUOTE</div>
+        </div>
+        <div style="font-size: 14px; color: #a3a3a3; line-height: 1.5; margin-top: 12px;">Reads the payer's posted bond and reputation score, then quotes a fee.</div>
+        <div style="margin-top: 18px; display: flex; flex-direction: column; gap: 1px; background: #262626; border: 1px solid #262626;">
+          <div style="display: grid; grid-template-columns: 12px 1fr auto; align-items: center; gap: 12px; background: #0a0a0a; padding: 10px 12px;">
+            <div style="width: 8px; height: 8px; background: #CCFF00;"></div>
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #e5e5e5;">TIER 0</div>
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 14px; color: #CCFF00;">2 bps</div>
+          </div>
+          <div style="display: grid; grid-template-columns: 12px 1fr auto; align-items: center; gap: 12px; background: #0a0a0a; padding: 10px 12px;">
+            <div style="width: 8px; height: 8px; background: #9BE600;"></div>
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #e5e5e5;">TIER 1</div>
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 14px; color: #9BE600;">8 bps</div>
+          </div>
+          <div style="display: grid; grid-template-columns: 12px 1fr auto; align-items: center; gap: 12px; background: #0a0a0a; padding: 10px 12px;">
+            <div style="width: 8px; height: 8px; background: #FFA23A;"></div>
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #e5e5e5;">TIER 2</div>
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 14px; color: #FFA23A;">15 bps</div>
+          </div>
+          <div style="display: grid; grid-template-columns: 12px 1fr auto; align-items: center; gap: 12px; background: #0a0a0a; padding: 10px 12px;">
+            <div style="width: 8px; height: 8px; background: #FF4D4D;"></div>
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #e5e5e5;">TIER 3<span style="color: #737373; letter-spacing: 0.06em;"> · UNBONDED</span></div>
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 14px; color: #FF4D4D;">30 bps</div>
+          </div>
+        </div>
+        <div style="font-size: 13px; color: #737373; line-height: 1.45; margin-top: 12px;">Tier 3 is what a normal pool charges <em style="color: #a3a3a3; font-style: normal;">everyone</em>.</div>
+        <div style="margin-top: auto; border: 1px solid #CCFF00; color: #CCFF00; font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.16em; padding: 10px 12px; text-align: center;">THIS NODE NEVER REJECTS A SWAP</div>
+      </div>
+
+      <div style="width: 52px; height: 420px; display: flex; align-items: center;">
+        <div style="flex: 1; height: 1px; background: #CCFF00; opacity: 0.55;"></div>
+        <div style="width: 0; height: 0; border-left: 8px solid #CCFF00; border-top: 5px solid transparent; border-bottom: 5px solid transparent;"></div>
+      </div>
+
+      <div style="width: 330px; height: 420px; box-sizing: border-box; border: 1px solid #262626; background: #0d0d0d; padding: 20px; display: flex; flex-direction: column;">
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.22em; color: #737373; margin-bottom: 18px;">NODE 03 · HOOK CALLBACK</div>
+        <div style="display: flex; align-items: baseline; gap: 10px;">
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 20px; font-weight: 600; color: #CCFF00;">afterSwap</div>
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; letter-spacing: 0.18em; color: #ffffff;">RECEIPT</div>
+        </div>
+        <div style="font-size: 14px; color: #a3a3a3; line-height: 1.5; margin-top: 12px;">Locks <span style="font-family: 'IBM Plex Mono', monospace; color: #ffffff;">2%</span> of notional as bond and writes a receipt.</div>
+        <div style="margin-top: 18px; border: 1px solid #262626; background: #0a0a0a;">
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.2em; color: #737373; padding: 9px 12px; border-bottom: 1px solid #262626;">RECEIPT · LIVE POOL</div>
+          <div style="display: flex; flex-direction: column;">
+            <div style="display: flex; justify-content: space-between; gap: 10px; padding: 8px 12px; font-family: 'IBM Plex Mono', monospace; font-size: 12px;"><span style="color: #737373;">payer</span><span style="color: #e5e5e5;">0x6F5eCa2f…cA9B</span></div>
+            <div style="display: flex; justify-content: space-between; gap: 10px; padding: 8px 12px; font-family: 'IBM Plex Mono', monospace; font-size: 12px;"><span style="color: #737373;">notional</span><span style="color: #e5e5e5;">0.000995</span></div>
+            <div style="display: flex; justify-content: space-between; gap: 10px; padding: 8px 12px; font-family: 'IBM Plex Mono', monospace; font-size: 12px;"><span style="color: #737373;">exec tick</span><span style="color: #e5e5e5;">-40</span></div>
+            <div style="display: flex; justify-content: space-between; gap: 10px; padding: 8px 12px; font-family: 'IBM Plex Mono', monospace; font-size: 12px;"><span style="color: #737373;">block</span><span style="color: #e5e5e5;">61,284,946</span></div>
+          </div>
+        </div>
+        <div style="margin-top: auto; border: 1px solid #262626; color: #737373; font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.14em; padding: 10px 12px; text-align: center;">SUB-DUST SWAPS SKIPPED</div>
+      </div>
+
+      <div style="width: 52px; height: 420px; display: flex; align-items: center;">
+        <div style="flex: 1; height: 1px; background: #CCFF00; opacity: 0.55;"></div>
+        <div style="width: 0; height: 0; border-left: 8px solid #CCFF00; border-top: 5px solid transparent; border-bottom: 5px solid transparent;"></div>
+      </div>
+
+      <div style="width: 200px; height: 420px; box-sizing: border-box; border: 1px dashed #404040; background: #0a0a0a; padding: 20px; display: flex; flex-direction: column;">
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.22em; color: #737373; margin-bottom: 18px;">NODE 04 · DELAY</div>
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 15px; letter-spacing: 0.16em; color: #ffffff;">WAIT</div>
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 52px; font-weight: 600; color: #ffffff; line-height: 1; margin-top: 10px;">100</div>
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.2em; color: #737373; margin-top: 6px;">BLOCKS</div>
+        <div style="display: flex; gap: 3px; margin-top: 18px;">
+          <div style="width: 2px; height: 22px; background: #262626;"></div>
+          <div style="width: 2px; height: 22px; background: #262626;"></div>
+          <div style="width: 2px; height: 22px; background: #262626;"></div>
+          <div style="width: 2px; height: 22px; background: #262626;"></div>
+          <div style="width: 2px; height: 22px; background: #262626;"></div>
+          <div style="width: 2px; height: 22px; background: #262626;"></div>
+          <div style="width: 2px; height: 22px; background: #262626;"></div>
+          <div style="width: 2px; height: 22px; background: #262626;"></div>
+          <div style="width: 2px; height: 22px; background: #262626;"></div>
+          <div style="width: 2px; height: 22px; background: #404040;"></div>
+          <div style="width: 2px; height: 22px; background: #404040;"></div>
+          <div style="width: 2px; height: 22px; background: #404040;"></div>
+        </div>
+        <div style="font-size: 13px; color: #a3a3a3; line-height: 1.5; margin-top: 18px;">≈ 20 minutes on mainnet.</div>
+        <div style="margin-top: auto; font-size: 13px; color: #d4d4d4; line-height: 1.5; border-top: 1px solid #262626; padding-top: 12px;">You cannot know who was informed until the price has told you.</div>
+      </div>
+
+      <div style="width: 52px; height: 420px; display: flex; align-items: center;">
+        <div style="flex: 1; height: 1px; background: #CCFF00; opacity: 0.55;"></div>
+        <div style="width: 0; height: 0; border-left: 8px solid #CCFF00; border-top: 5px solid transparent; border-bottom: 5px solid transparent;"></div>
+      </div>
+
+      <div style="width: 564px; height: 560px; box-sizing: border-box; border: 2px solid #CCFF00; background: #101010; padding: 24px; display: flex; flex-direction: column;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px;">
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.22em; color: #CCFF00;">NODE 05 · SETTLEMENT</div>
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.16em; color: #0a0a0a; background: #CCFF00; padding: 5px 9px;">PERMISSIONLESS · CALLABLE BY ANYONE</div>
+        </div>
+        <div style="display: flex; align-items: baseline; gap: 12px;">
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 30px; font-weight: 600; color: #CCFF00;">settle</div>
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 20px; letter-spacing: 0.16em; color: #ffffff;">THE BILL</div>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr auto 1fr; align-items: stretch; gap: 0; margin-top: 20px; border: 1px solid #262626;">
+          <div style="padding: 14px; background: #0a0a0a;">
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.2em; color: #737373;">MOST ADVERSE PRICE THAT PRINTED</div>
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 15px; color: #B026FF; margin-top: 8px;">extremum, not average</div>
+          </div>
+          <div style="width: 44px; display: flex; align-items: center; justify-content: center; background: #0a0a0a; border-left: 1px solid #262626; border-right: 1px solid #262626; font-family: 'IBM Plex Mono', monospace; font-size: 18px; color: #737373;">−</div>
+          <div style="padding: 14px; background: #0a0a0a;">
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.2em; color: #737373;">EXECUTION PRICE</div>
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 15px; color: #e5e5e5; margin-top: 8px;">from the receipt</div>
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 14px; margin-top: 16px;">
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.2em; color: #737373;">= REALIZED MARKOUT</div>
+          <div style="flex: 1; height: 1px; background: #262626;"></div>
+        </div>
+        <div style="display: flex; gap: 1px; background: #262626; border: 1px solid #262626; margin-top: 16px;">
+          <div style="flex: 1; background: #0a0a0a; padding: 13px 14px;">
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.2em; color: #737373;">CHARGE</div>
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 20px; color: #ffffff; margin-top: 7px;">0.6 × markout</div>
+          </div>
+          <div style="flex: 1; background: #0a0a0a; padding: 13px 14px;">
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.2em; color: #737373;">CAP</div>
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 20px; color: #ffffff; margin-top: 7px;">1% notional</div>
+          </div>
+          <div style="flex: 1; background: #0a0a0a; padding: 13px 14px;">
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.2em; color: #737373;">DEBITED FROM</div>
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 20px; color: #ffffff; margin-top: 7px;">locked bond</div>
+          </div>
+        </div>
+        <div style="margin-top: auto; padding-top: 20px;">
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.22em; color: #737373; margin-bottom: 10px;">CHARGE SPLITS THREE WAYS</div>
+          <div style="display: flex; height: 26px; gap: 1px;">
+            <div style="flex: 80; background: #CCFF00;"></div>
+            <div style="flex: 5; background: #ffffff;"></div>
+            <div style="flex: 15; background: #B026FF;"></div>
+          </div>
+          <div style="display: flex; gap: 1px; margin-top: 10px;">
+            <div style="flex: 80;">
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 17px; color: #CCFF00;">80%</div>
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.12em; color: #a3a3a3; margin-top: 4px;">TO LPs</div>
+            </div>
+            <div style="flex: 5; min-width: 96px;">
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 17px; color: #ffffff;">5%</div>
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.12em; color: #a3a3a3; margin-top: 4px;">TO CALLER</div>
+            </div>
+            <div style="flex: 15; min-width: 150px;">
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 17px; color: #B026FF;">15%</div>
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.12em; color: #a3a3a3; margin-top: 4px;">REBATE POOL · PAYS BENIGN TRADERS BACK</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <svg width="1872" height="730" viewBox="0 0 1872 730" style="position: absolute; top: 0; left: 0; pointer-events: none; overflow: visible;">
+      <polyline points="1590,562 1590,672 457,672 457,438" fill="none" stroke="#B026FF" stroke-width="2" stroke-dasharray="{{ edgeDash }}"></polyline>
+      <polygon points="457,424 449,442 465,442" fill="#B026FF"></polygon>
+      <circle cx="1590" cy="562" r="4" fill="#B026FF"></circle>
+    </svg>
+
+    <div style="position: absolute; left: 828px; top: 654px; background: #0a0a0a; padding: 0 14px; display: flex; align-items: center; gap: 10px;">
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.22em; color: #B026FF;">FEEDBACK</div>
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 15px; color: #ffffff; letter-spacing: 0.02em;">reputation updates the next quote</div>
+    </div>
+  </div>
+
+  <div style="display: grid; grid-template-columns: 1fr 400px; gap: 24px; margin-top: 36px; align-items: start;">
+
+    <div style="border: 1px solid #262626; background: #0d0d0d;">
+      <div style="display: flex; justify-content: space-between; align-items: baseline; padding: 16px 20px; border-bottom: 1px solid #262626;">
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.22em; color: #737373;">MEASURED · 3,465 REAL MAINNET USDC/WETH SWAPS</div>
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #CCFF00;">LP PnL 2.06× a flat 30 bps pool on identical flow</div>
+      </div>
+      <div style="display: grid; grid-template-columns: 140px 1fr 1fr 1fr; padding: 12px 20px; border-bottom: 1px solid #262626; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.2em; color: #737373;">
+        <div>TIER</div><div>REALIZED MARKOUT</div><div>FEE PAID</div><div>RATIO</div>
+      </div>
+      <div style="display: grid; grid-template-columns: 140px 1fr 1fr 1fr; align-items: center; padding: 13px 20px; border-bottom: 1px solid #171717; font-family: 'IBM Plex Mono', monospace; font-size: 15px;">
+        <div style="display: flex; align-items: center; gap: 10px; color: #CCFF00;"><span style="width: 8px; height: 8px; background: #CCFF00; display: inline-block;"></span>T0</div>
+        <div style="color: #e5e5e5;">0.98 bps</div><div style="color: #e5e5e5;">2.59 bps</div><div style="color: #737373;">2.6×</div>
+      </div>
+      <div style="display: grid; grid-template-columns: 140px 1fr 1fr 1fr; align-items: center; padding: 13px 20px; border-bottom: 1px solid #171717; font-family: 'IBM Plex Mono', monospace; font-size: 15px;">
+        <div style="display: flex; align-items: center; gap: 10px; color: #9BE600;"><span style="width: 8px; height: 8px; background: #9BE600; display: inline-block;"></span>T1</div>
+        <div style="color: #e5e5e5;">6.41 bps</div><div style="color: #e5e5e5;">11.85 bps</div><div style="color: #737373;">1.8×</div>
+      </div>
+      <div style="display: grid; grid-template-columns: 140px 1fr 1fr 1fr; align-items: center; padding: 13px 20px; border-bottom: 1px solid #171717; font-family: 'IBM Plex Mono', monospace; font-size: 15px;">
+        <div style="display: flex; align-items: center; gap: 10px; color: #FFA23A;"><span style="width: 8px; height: 8px; background: #FFA23A; display: inline-block;"></span>T2</div>
+        <div style="color: #e5e5e5;">14.90 bps</div><div style="color: #e5e5e5;">23.94 bps</div><div style="color: #737373;">1.6×</div>
+      </div>
+      <div style="display: grid; grid-template-columns: 140px 1fr 1fr 1fr; align-items: center; padding: 13px 20px; border-bottom: 1px solid #262626; font-family: 'IBM Plex Mono', monospace; font-size: 15px;">
+        <div style="display: flex; align-items: center; gap: 10px; color: #FF4D4D;"><span style="width: 8px; height: 8px; background: #FF4D4D; display: inline-block;"></span>T3</div>
+        <div style="color: #e5e5e5;">39.14 bps</div><div style="color: #e5e5e5;">53.48 bps</div><div style="color: #737373;">1.4×</div>
+      </div>
+      <div style="display: flex; gap: 32px; padding: 14px 20px; font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #a3a3a3;">
+        <div style="letter-spacing: 0.16em; font-size: 10px; color: #737373; align-self: center;">HOOK GAS ON CHAIN</div>
+        <div>+36,328 <span style="color: #737373;">quote only</span></div>
+        <div>+98,209 <span style="color: #737373;">receipt written</span></div>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 20px;">
+      <div style="border-top: 1px solid #B026FF; background: #0d0d0d; padding: 18px 20px;">
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.22em; color: #B026FF; margin-bottom: 10px;">NO ORACLE</div>
+        <div style="font-size: 15px; color: #d4d4d4; line-height: 1.5;">No oracle anywhere in this loop. Every input is a price the pool itself already printed.</div>
+      </div>
+      <div style="border-top: 1px solid #B026FF; background: #0d0d0d; padding: 18px 20px;">
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.22em; color: #B026FF; margin-bottom: 10px;">SELF-ENFORCING</div>
+        <div style="font-size: 15px; color: #d4d4d4; line-height: 1.5;">The bond <span style="font-family: 'IBM Plex Mono', monospace; color: #ffffff;">(2%)</span> is always twice the maximum charge <span style="font-family: 'IBM Plex Mono', monospace; color: #ffffff;">(1%)</span>, so walking away costs more than paying. Settlement enforces itself.</div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:2000,&quot;height&quot;:1420},&quot;feedbackEdge&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;dashed&quot;,&quot;solid&quot;,&quot;dotted&quot;],&quot;default&quot;:&quot;dashed&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Feedback edge&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    const style = this.props.feedbackEdge ?? "dashed";
+    return { edgeDash: style === "solid" ? "0" : style === "dotted" ? "2 5" : "7 6" };
+  }
+}
+</script>
+</body>
+</html>

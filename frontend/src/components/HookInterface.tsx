@@ -7,6 +7,7 @@ import {
   amount, bps, readAddress, readPoolState, short,
   type Address, type Payer, type PoolState, type Receipt,
 } from '@/lib/postmark'
+import FlowDiagram from './FlowDiagram'
 
 const connectionPaths = [
   'M 8 74 C 28 52, 38 48, 54 34 S 78 18, 96 22',
@@ -20,11 +21,11 @@ const tabVariants = {
   exit: { opacity: 0, y: -10, transition: { duration: 0.2 } },
 }
 
-const tabs = ['Ledger', 'Receipts', 'Pool'] as const
+const tabs = ['Flow', 'Ledger', 'Receipts', 'Pool'] as const
 type Tab = (typeof tabs)[number]
 
 export default function HookInterface() {
-  const [activeTab, setActiveTab] = useState<Tab>('Ledger')
+  const [activeTab, setActiveTab] = useState<Tab>('Flow')
   const [state, setState] = useState<PoolState | null>(null)
   const [error, setError] = useState<string>('')
   const [selected, setSelected] = useState<number | null>(null)
@@ -84,6 +85,12 @@ export default function HookInterface() {
         )}
 
         <AnimatePresence mode="wait">
+          {activeTab === 'Flow' && (
+            <motion.div key="Flow" variants={tabVariants} initial="initial" animate="animate" exit="exit" className="relative z-0">
+              <FlowDiagram state={state} />
+            </motion.div>
+          )}
+
           {activeTab === 'Ledger' && (
             <motion.div key="Ledger" variants={tabVariants} initial="initial" animate="animate" exit="exit"
               className="relative z-0 grid items-start gap-12 grid-cols-1 lg:grid-cols-[1fr_420px] lg:gap-16">

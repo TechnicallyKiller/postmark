@@ -246,10 +246,31 @@ export function bps(pips: number) {
   return pips / 100
 }
 
-/** 18-decimal amount to a readable string, without pulling in a formatter for four call sites. */
-export function amount(v: bigint, dp = 4) {
-  const whole = v / 10n ** 18n
-  const frac = (v % 10n ** 18n).toString().padStart(18, '0').slice(0, dp)
-  const trimmed = frac.replace(/0+$/, '')
-  return trimmed ? `${whole}.${trimmed}` : `${whole}`
+/**
+ * 18-decimal amount to a readable string, kept significant rather than fixed-width.
+ *
+ * A fixed number of decimals is wrong for this data: the testnet pool's numbers are tiny, and at
+ * four decimals a real charge ceiling of 0.00000996 renders as "0" — which reads as "this cannot
+ * cost anything" rather than "this is a small number". So the formatter keeps `sig` significant
+ * digits wherever the value happens to sit, and only ever returns 0 for an actual zero.
+ */
+export function amount(v: bigint, sig = 3) {
+  if (v === 0n) return '0'
+  const neg = v < 0n
+  const abs = neg ? -v : v
+  const whole = abs / 10n ** 18n
+  const fracDigits = (abs % 10n ** 18n).toString().padStart(18, '0')
+
+  let out: string
+  if (whole > 0n) {
+    const dp = Math.max(0, sig - whole.toString().length)
+    const frac = fracDigits.slice(0, dp).replace(/0+$/, '')
+    out = frac ? `${whole}.${frac}` : `${whole}`
+  } else {
+    // Pure fraction: skip the leading zeros, then keep `sig` digits after the first significant one.
+    const lead = fracDigits.search(/[1-9]/)
+    const frac = fracDigits.slice(0, lead + sig).replace(/0+$/, '')
+    out = `0.${frac}`
+  }
+  return neg ? `-${out}` : out
 }

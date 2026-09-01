@@ -69,11 +69,11 @@ export default function HookInterface() {
         </div>
       </nav>
 
-      <div id="top" className="relative flex-1 mx-auto w-full max-w-7xl px-4 py-8 md:px-6 md:py-14 lg:px-10 lg:py-20">
-        <svg className="hidden md:block pointer-events-none absolute inset-0 h-full w-full opacity-70" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+      <div id="top" className="relative isolate flex-1 mx-auto w-full max-w-7xl px-4 py-8 md:px-6 md:py-14 lg:px-10 lg:py-20">
+        <svg className="hidden md:block pointer-events-none absolute inset-0 -z-10 h-full w-full opacity-25" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
           {connectionPaths.map((path, i) => (
-            <motion.path key={path} d={path} fill="none" stroke={i % 2 ? '#B026FF' : '#CCFF00'} strokeWidth="0.22" strokeDasharray="1 1"
-              initial={{ pathLength: 0, opacity: 0 }} animate={{ pathLength: 1, opacity: 0.8 }} transition={{ duration: 1.5, delay: i * 0.25 }} />
+            <motion.path key={path} d={path} fill="none" stroke={i % 2 ? '#B026FF' : '#CCFF00'} strokeWidth="0.12" strokeDasharray="1 1.6"
+              initial={{ pathLength: 0, opacity: 0 }} animate={{ pathLength: 1, opacity: 0.35 }} transition={{ duration: 1.5, delay: i * 0.25 }} />
           ))}
         </svg>
 
@@ -86,7 +86,7 @@ export default function HookInterface() {
         <AnimatePresence mode="wait">
           {activeTab === 'Ledger' && (
             <motion.div key="Ledger" variants={tabVariants} initial="initial" animate="animate" exit="exit"
-              className="relative grid items-start gap-12 grid-cols-1 lg:grid-cols-[1fr_420px] lg:gap-16">
+              className="relative z-0 grid items-start gap-12 grid-cols-1 lg:grid-cols-[1fr_420px] lg:gap-16">
               <section className="max-w-2xl">
                 <p className="mb-4 lg:mb-7 inline-flex border border-[#B026FF] bg-[#B026FF]/10 px-3 py-1 text-[10px] font-bold tracking-[0.18em] text-[#CCFF00]">
                   LIVE · UNICHAIN SEPOLIA · {short(ADDRESSES.hook, 8)}
@@ -100,7 +100,7 @@ export default function HookInterface() {
                   posted, with no oracle anywhere in the loop.
                 </p>
 
-                <div className="mt-10 grid max-w-xl grid-cols-3 border border-neutral-800 bg-neutral-900/70">
+                <div className="mt-10 grid max-w-xl grid-cols-3 border border-neutral-800 bg-neutral-900">
                   <Stat label="RECEIPTS WRITTEN" value={state ? String(state.receiptCount) : '—'} tone="#CCFF00" />
                   <Stat label="SETTLEMENT WINDOW" value={state ? `${state.windowBlocks}` : '—'} sub="blocks" border />
                   <Stat label="BOND / CAP" value={state ? `${state.bondRatioBps / 100}% / ${state.maxChargeBps / 100}%` : '—'} tone="#B026FF" />
@@ -115,7 +115,7 @@ export default function HookInterface() {
           )}
 
           {activeTab === 'Receipts' && (
-            <motion.div key="Receipts" variants={tabVariants} initial="initial" animate="animate" exit="exit" className="grid grid-cols-1 lg:grid-cols-[380px_1fr] gap-8 lg:gap-12">
+            <motion.div key="Receipts" variants={tabVariants} initial="initial" animate="animate" exit="exit" className="relative z-0 grid grid-cols-1 lg:grid-cols-[380px_1fr] gap-8 lg:gap-12">
               <div>
                 <h2 className="font-mono text-3xl font-bold lg:text-4xl">Open receipts</h2>
                 <p className="mt-3 text-xs md:text-sm text-neutral-400">
@@ -126,7 +126,7 @@ export default function HookInterface() {
                   {open.length === 0 && <Empty loading={!state && !error} what="receipts" />}
                   {open.map((r) => (
                     <button key={r.id} onClick={() => setSelected(r.id)}
-                      className={`border p-4 text-left transition-colors ${selected === r.id ? 'border-[#CCFF00] bg-neutral-900' : 'border-neutral-800 bg-neutral-900/70 hover:border-neutral-600'}`}>
+                      className={`border p-4 text-left transition-colors ${selected === r.id ? 'border-[#CCFF00] bg-neutral-900' : 'border-neutral-800 bg-neutral-900 hover:border-neutral-600'}`}>
                       <div className="flex items-center justify-between">
                         <span className="font-mono text-xs text-neutral-500">#{r.id}</span>
                         <span className="text-[10px] font-bold" style={{ color: TIER_COLOR[r.tier] }}>T{r.tier}</span>
@@ -144,7 +144,7 @@ export default function HookInterface() {
           )}
 
           {activeTab === 'Pool' && (
-            <motion.div key="Pool" variants={tabVariants} initial="initial" animate="animate" exit="exit" className="flex flex-col gap-8 lg:gap-12">
+            <motion.div key="Pool" variants={tabVariants} initial="initial" animate="animate" exit="exit" className="relative z-0 flex flex-col gap-8 lg:gap-12">
               <div>
                 <h2 className="font-mono text-3xl font-bold lg:text-5xl">The schedule</h2>
                 <p className="mt-3 max-w-2xl text-xs md:text-sm text-neutral-400">
@@ -156,7 +156,7 @@ export default function HookInterface() {
 
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4">
                 {(state?.tierFees ?? [200, 800, 1500, 3000]).map((fee, t) => (
-                  <div key={t} className="border border-neutral-800 bg-neutral-900/70 p-5" style={{ borderTopColor: TIER_COLOR[t], borderTopWidth: 3 }}>
+                  <div key={t} className="border border-neutral-800 bg-neutral-900 p-5" style={{ borderTopColor: TIER_COLOR[t], borderTopWidth: 3 }}>
                     <p className="font-mono text-[10px] tracking-[0.16em]" style={{ color: TIER_COLOR[t] }}>TIER {t}</p>
                     <p className="mt-2 font-mono text-3xl font-bold">{bps(fee)}<span className="text-base text-neutral-500"> bps</span></p>
                     <p className="mt-1 text-[10px] text-neutral-500">{TIER_NAME[t]}</p>
@@ -174,7 +174,7 @@ export default function HookInterface() {
               </p>
 
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 lg:gap-8">
-                <div className="border border-neutral-700 bg-neutral-900/90 p-5 md:p-8">
+                <div className="border border-neutral-700 bg-neutral-900 p-5 md:p-8">
                   <h3 className="text-[10px] tracking-[0.2em] text-neutral-500 mb-5 border-b border-neutral-800 pb-3">LIVE CONTRACTS</h3>
                   <div className="grid gap-3 font-mono text-[11px]">
                     {Object.entries(ADDRESSES).map(([name, addr]) => (
@@ -199,7 +199,7 @@ export default function HookInterface() {
                 </div>
 
                 <div className="flex flex-col gap-6">
-                  <div className="border border-neutral-700 bg-neutral-900/90 p-5 md:p-8">
+                  <div className="border border-neutral-700 bg-neutral-900 p-5 md:p-8">
                     <h3 className="text-[10px] tracking-[0.2em] text-neutral-500 mb-5 border-b border-neutral-800 pb-3">MEASURED ON REAL FLOW</h3>
                     <div className="flex items-baseline gap-4">
                       <span className="font-mono text-4xl font-bold text-[#CCFF00]">2.06×</span>
@@ -211,7 +211,7 @@ export default function HookInterface() {
                       the toxic tail pays 53.48.
                     </p>
                   </div>
-                  <div className="border border-neutral-700 bg-neutral-900/90 p-5 md:p-8">
+                  <div className="border border-neutral-700 bg-neutral-900 p-5 md:p-8">
                     <h3 className="text-[10px] tracking-[0.2em] text-neutral-500 mb-5 border-b border-neutral-800 pb-3">HOOK GAS, ON CHAIN</h3>
                     <div className="grid grid-cols-2 gap-4 font-mono">
                       <div><p className="text-2xl font-bold">+36,328</p><p className="mt-1 text-[10px] text-neutral-500">quote only</p></div>
@@ -280,7 +280,7 @@ function Empty({ loading, what }: { loading: boolean; what: string }) {
 function PayerTable({ payers, loading }: { payers: Payer[]; loading: boolean }) {
   if (!payers.length) return <Empty loading={loading} what="payers" />
   return (
-    <div className="border border-neutral-800 bg-neutral-900/70">
+    <div className="border border-neutral-800 bg-neutral-900">
       <div className="grid grid-cols-[1fr_60px_80px_90px_80px] gap-2 border-b border-neutral-800 px-4 py-3 text-[9px] tracking-[0.14em] text-neutral-500">
         <span>PAYER</span><span>TIER</span><span className="text-right">SCORE</span><span className="text-right">BOND</span><span className="text-right">LOCKED</span>
       </div>
@@ -289,8 +289,8 @@ function PayerTable({ payers, loading }: { payers: Payer[]; loading: boolean }) 
           <a href={`${EXPLORER}/address/${p.address}`} target="_blank" rel="noreferrer" className="font-mono hover:text-[#CCFF00]">{short(p.address, 8)}</a>
           <span className="font-mono font-bold" style={{ color: TIER_COLOR[p.tier] }}>T{p.tier}</span>
           <span className="text-right font-mono" style={{ color: TIER_COLOR[p.tier] }}>{p.score.toFixed(2)}</span>
-          <span className="text-right font-mono text-neutral-300">{amount(p.bond, 3)}</span>
-          <span className="text-right font-mono text-[#B026FF]">{amount(p.locked, 4)}</span>
+          <span className="text-right font-mono text-neutral-300">{amount(p.bond)}</span>
+          <span className="text-right font-mono text-[#B026FF]">{amount(p.locked)}</span>
         </div>
       ))}
     </div>
@@ -309,7 +309,7 @@ function ReceiptDetail({ receipt, state }: { receipt?: Receipt; state: PoolState
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="border border-neutral-700 bg-neutral-900/90 p-5 md:p-8">
+      <div className="border border-neutral-700 bg-neutral-900 p-5 md:p-8">
         <div className="flex items-start justify-between border-b border-neutral-800 pb-4">
           <div>
             <p className="text-[10px] tracking-[0.2em] text-neutral-500">RECEIPT #{receipt.id}</p>
@@ -324,14 +324,14 @@ function ReceiptDetail({ receipt, state }: { receipt?: Receipt; state: PoolState
           <Field k="EXECUTION TICK" v={String(receipt.tickAfter)} />
           <Field k="DIRECTION" v={receipt.zeroForOne ? 'zero → one' : 'one → zero'} />
           <Field k="WRITTEN AT" v={receipt.blockNumber.toLocaleString()} />
-          <Field k="BOND LOCKED" v={amount(bond, 5)} tone="#B026FF" />
-          <Field k="MOST IT CAN COST" v={amount(cap, 5)} tone="#FF4D4D" />
+          <Field k="BOND LOCKED" v={amount(bond)} tone="#B026FF" />
+          <Field k="MOST IT CAN COST" v={amount(cap)} tone="#FF4D4D" />
           <Field k="SETTLEABLE AT" v={settleAt.toLocaleString()} />
           <Field k="STATUS" v={ready ? 'ready to settle' : `${remaining} blocks to go`} tone={ready ? '#CCFF00' : undefined} />
         </div>
       </div>
 
-      <div className="border border-neutral-700 bg-neutral-900/90 p-5 md:p-8">
+      <div className="border border-neutral-700 bg-neutral-900 p-5 md:p-8">
         <h3 className="text-[10px] tracking-[0.2em] text-neutral-500 mb-5 border-b border-neutral-800 pb-3">HOW THIS WILL SETTLE</h3>
         <ol className="grid gap-4 text-xs">
           {[
@@ -385,7 +385,7 @@ function LookupPanel({ bondCurrency, tierFees }: { bondCurrency?: Address; tierF
   }
 
   return (
-    <div className="w-full border border-neutral-700 bg-neutral-900/90 p-5 md:p-6 shadow-[0_0_42px_rgba(204,255,0,0.06)] backdrop-blur-md lg:p-7">
+    <div className="w-full border border-neutral-700 bg-neutral-900 p-5 md:p-6 shadow-[0_0_42px_rgba(204,255,0,0.06)] backdrop-blur-md lg:p-7">
       <div className="mb-5 border-b border-neutral-800 pb-4">
         <p className="text-[10px] tracking-[0.2em] text-neutral-500">SCORE REGISTRY</p>
         <h2 className="mt-2 font-mono text-xl md:text-2xl font-bold">What would you pay?</h2>
@@ -419,8 +419,8 @@ function LookupPanel({ bondCurrency, tierFees }: { bondCurrency?: Address; tierF
             <div className="mt-1 grid gap-1.5 border-t border-neutral-800 pt-3 text-[10px]">
               <Row k="EWMA score" v={`${result.score.toFixed(2)} bps`} />
               <Row k="receipts settled" v={String(result.settled)} />
-              <Row k="bond posted" v={amount(result.bond, 4)} />
-              <Row k="bond locked" v={amount(result.locked, 5)} />
+              <Row k="bond posted" v={amount(result.bond)} />
+              <Row k="bond locked" v={amount(result.locked)} />
             </div>
             {result.bond === 0n && (
               <p className="text-[10px] leading-4 text-neutral-500">
